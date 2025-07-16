@@ -71,7 +71,7 @@ namespace PLang.Modules.AssertModule
 				return null;
 			}
 			 
-			memoryStack.Put(resultVariable, new { Message = "Failed", Success = false, ExpectedValue = expectedValue , ActualValue = actualValue }, goalStep: goalStep);
+			memoryStack.Put(resultVariable, new { Message = "Failed", Success = false, ExpectedValue = expectedValue , ActualValue = actualValue, StepText = goalStep.Text }, goalStep: goalStep);
 			return null;	
 		}
 	}
