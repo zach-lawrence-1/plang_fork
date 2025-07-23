@@ -105,7 +105,7 @@ namespace PLang.Utils
 				goal = systemGoals.FirstOrDefault(p => p.RelativePrPath.Equals(goalToCall.Path.AdjustPathToOs(), StringComparison.OrdinalIgnoreCase));
 				if (goal != null) return (goal, null);
 
-				return (null, new Error($"{goalToCall.Name} coult not be found. Searched for {goalToCall.Path}"));
+				return (null, new Error($"{goalToCall.Name} could not be found. Searched for {goalToCall.Path}", Key: "GoalNotFound", StatusCode: 404));
 			}
 
 			string goalToCallName = goalToCall.Name;
@@ -123,7 +123,7 @@ namespace PLang.Utils
 			 else if (goalToCallName.Contains("/"))
 			{
 				goalToCallName = goalToCallName.Substring(goalToCallName.LastIndexOf("/") + 1);
-				goalToCallPath = goalToCall.Name.Substring(0, goalToCall.Name.LastIndexOf("/")).AdjustPathToOs();
+				goalToCallPath = goalToCall.Name.Substring(0, goalToCall.Name.LastIndexOf("/") + 1).AdjustPathToOs();
 
 				if (!goalToCall.Name.StartsWith("/"))
 				{
@@ -149,12 +149,12 @@ namespace PLang.Utils
 					&& p.GoalName.Equals(goalToCallName, StringComparison.OrdinalIgnoreCase));
 			if (goal != null) return (goal, null);
 
-			return (null, new Error($"{goalToCall.Name} coult not be found. Searched for {goalToCall.Path}"));
+			return (null, new Error($"{goalToCall.Name} could not be found. Searched for '{goalToCall.Path}'", Key: "GoalNotFound", StatusCode: 404));
 		}
 
 		static string MergePath(string currentRelativePath, string newPath) =>
 					new Uri(new Uri($"file://{currentRelativePath}/"), newPath).AbsolutePath;
-
+		 
 		internal static (Goal?, IError?) GetGoal(string relativeGoalPath, string absoluteAppPath, GoalToCallInfo goalToCall, List<Goal> appGoals, List<Goal> systemGoals)
 		{
 			Goal? goal;
@@ -206,7 +206,7 @@ namespace PLang.Utils
 										&& p.GoalName.Equals(goalName));
 			if (goal != null) return (goal, null);
 
-			return (null, new BuilderError($"Could not find {goalToCall.Name}", Retry: false));
+			return (null, new BuilderError($"Could not find {goalToCall.Name}", Retry: false, Key: "GoalNotFound", StatusCode: 404));
 
 		}
 
