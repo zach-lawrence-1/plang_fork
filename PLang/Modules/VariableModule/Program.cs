@@ -439,15 +439,28 @@ namespace PLang.Modules.VariableModule
 
 		}
 
-		public async Task SetVariableWithCondition([HandlesVariableAttribute] string variableName, bool boolValue, object valueIfTrue, object valueIfFalse)
+		//public async Task SetVariableWithCondition([HandlesVariableAttribute] string variableName, bool boolValue, object valueIfTrue, object valueIfFalse)
+		//{
+		//	if (boolValue)
+		//	{
+		//		await SetVariable(variableName, valueIfTrue);
+		//	}
+		//	else
+		//	{
+		//		await SetVariable(variableName, valueIfFalse);
+		//	}
+		//}
+
+		[Description(@"Compare two variables and assign the specified variable name the result of the comparison")]
+		public async Task SetVariableWithComparison([HandlesVariableAttribute] string variableName, object leftValue, object rightValue)
 		{
-			if (boolValue)
+			if (leftValue.Equals(rightValue))
 			{
-				await SetVariable(variableName, valueIfTrue);
+				await SetVariable(variableName, true);
 			}
 			else
 			{
-				await SetVariable(variableName, valueIfFalse);
+				await SetVariable(variableName, false);
 			}
 		}
 
