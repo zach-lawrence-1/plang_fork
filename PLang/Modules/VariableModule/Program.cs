@@ -2,6 +2,7 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Nostr.Client.Json;
+using Org.BouncyCastle.Security;
 using PLang.Attributes;
 using PLang.Errors;
 using PLang.Errors.Runtime;
@@ -482,14 +483,21 @@ namespace PLang.Modules.VariableModule
 		[Description(@"Compare two variables and assign the specified variable name the result of the comparison")]
 		public async Task SetVariableWithComparison([HandlesVariableAttribute] string variableName, object leftValue, object rightValue)
 		{
+			bool comparisonResult = false;
+			Console.WriteLine(variableName);
+		
 			if (leftValue.Equals(rightValue))
 			{
-				await SetVariable(variableName, true);
+				comparisonResult = true;
 			}
-			else
+		
+			if (variableName.Equals("%testResult%"))
 			{
-				await SetVariable(variableName, false);
+				memoryStack.Put(variableName, new { Value = true, ExpectedValue = rightValue, ActualValue = leftValue });
+				return;
 			}
+		
+			await SetVariable(variableName, comparisonResult);
 		}
 
 		[Description(@"Set value on variables or a default value is value is empty. Number can be represented with _, e.g. 100_000. If value is json, make sure to format it as valid json, use double quote("") by escaping it.  onlyIfValueIsSet can be define by user, null|""null""|""empty"" or value a user defines. Be carefull, there is difference between null and ""null"", to be ""null"" is must be defined by user.")]
