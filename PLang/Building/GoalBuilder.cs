@@ -8,6 +8,8 @@ using PLang.Container;
 using PLang.Errors;
 using PLang.Errors.Builder;
 using PLang.Events;
+using PLang.Events.Types;
+using PLang.Exceptions;
 using PLang.Interfaces;
 using PLang.Models;
 using PLang.Modules.DbModule;
@@ -83,7 +85,13 @@ namespace PLang.Building
 			logger.LogDebug($" - Goal has not change - validating steps {goal.GoalName} - {stopwatch.ElapsedMilliseconds}");
 			var validationError = await ValidateSteps(goal);
 			logger.LogDebug($" - Done validating steps {goal.GoalName} - {stopwatch.ElapsedMilliseconds}");
-			if (!goal.HasChanged && validationError == null) return null;
+
+			var isBuiltResult = await GoalIsBuilt(goal, validationError, container.GetInstance<IEngine>());
+			if (isBuiltResult.Error != null) return isBuiltResult.Error;
+			if (isBuiltResult.IsBuilt)
+			{
+				return null;
+			}
 
 			logger.LogInformation($"\nStart to build {goal.GoalName} - {goal.RelativeGoalPath} - {goal.HasChanged}");
 
@@ -136,6 +144,25 @@ namespace PLang.Building
 			return (groupedBuildErrors.Count > 0) ? groupedBuildErrors : null;
 		}
 
+		private async Task<(bool IsBuilt, IBuilderError? Error)> GoalIsBuilt(Goal goal, GroupedBuildErrors? validationError, IEngine engine)
+		{
+			if (validationError == null) return (!goal.HasChanged, null);
+
+			var missingSettings = validationError.ErrorChain.Where(p => p.Exception?.GetType() == typeof(MissingSettingsException));
+			if (!missingSettings.Any()) return (!goal.HasChanged, null);
+
+			var error = await MissingSettingsHelper.Handle(engine, missingSettings);
+			if (error != null)
+			{
+				var me = new MultipleBuildError(validationError);
+				me.Add(error);
+				return (false, me);
+			}
+
+			return (!goal.HasChanged, null);
+
+		}
+
 		private async Task<IBuilderError?> BuildStep(Goal goal, int i, List<string>? excludeModules = null)
 		{
 			if (excludeModules == null) excludeModules = new();
@@ -149,7 +176,7 @@ namespace PLang.Building
 					return buildStepError;
 				}
 			}
-
+			goal.GoalSteps[i].Hash = null;
 			goal.GoalSteps[i].Hash = JsonConvert.SerializeObject(goal.GoalSteps[i], GoalSerializer.Settings).ComputeHash().Hash;
 			WriteToGoalPrFile(goal);
 
@@ -202,8 +229,8 @@ namespace PLang.Building
 			// steps that come after as they can be affected by previous steps. 
 			// example of that, steps that creates table but is not build,
 			// step after that insert into table will fail
-			
-			
+
+
 			Stopwatch stopwatch = Stopwatch.StartNew();
 			GroupedBuildErrors errors = new();
 			bool stepsNotBuilt = false;
@@ -264,6 +291,12 @@ namespace PLang.Building
 					logger.LogDebug($"   - Done running builder methods - {stopwatch.ElapsedMilliseconds}");
 				}
 
+				if (string.IsNullOrEmpty(step.Hash))
+				{
+					step.IsValid = false;
+					step.Reload = false;
+					continue;
+				}
 				step.IsValid = true;
 
 			}

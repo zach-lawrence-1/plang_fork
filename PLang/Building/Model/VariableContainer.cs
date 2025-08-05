@@ -28,7 +28,7 @@ namespace PLang.Building.Model
 		protected readonly List<Variable> _variables = new();
 
 		[IgnoreWhenInstructed]
-		public IReadOnlyList<Variable> Variables => _variables;
+		public List<Variable> Variables => _variables;
 
 	
 		public void AddVariable<T>(T? value, Func<Task>? func = null, string? variableName = null)
@@ -53,6 +53,8 @@ namespace PLang.Building.Model
 		}
 		public void AddVariable(Variable goalVariable)
 		{
+			if (goalVariable == null) return;
+
 			var variableIdx = _variables.FindIndex(p => p.VariableName.Equals(goalVariable.VariableName, StringComparison.OrdinalIgnoreCase));
 			if (variableIdx == -1)
 			{

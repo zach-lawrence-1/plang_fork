@@ -55,8 +55,9 @@ namespace PLang.Modules.ThrowErrorModule
 					endingGoal = endingGoal.ParentGoal;
 				}
 			}
+			if (endingGoal == null) endingGoal = @event.SourceGoal;
 
-			return new ErrorHandled(error);
+			return new EndGoal(endingGoal, goalStep, error.Message);
 		}
 
 		[Description("Retries a step that caused an error. maxRetriesReachedMesage can contain {0} to include the retry count, when null a default message will be provided")]
@@ -96,6 +97,7 @@ namespace PLang.Modules.ThrowErrorModule
 					endingGoal = endingGoal.ParentGoal;
 				}
 			}
+			if (endingGoal == null) endingGoal = goal;
 
 			return new EndGoal(endingGoal, goalStep, message ?? "", Levels: levels);
 		}
