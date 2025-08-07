@@ -30,6 +30,7 @@ namespace PLang.Services.OutputStream
 
 		public bool IsFlushed { get; set; }
 		public IEngine Engine { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
+		public string Id { get; set; }
 
 		public UIOutputStream(IFileSystem fileSystem, IForm iForm)
 		{
@@ -37,13 +38,13 @@ namespace PLang.Services.OutputStream
 			IForm = iForm;
 			Stream = new MemoryStream();
 			ErrorStream = new MemoryStream();
-
+			Id = Guid.NewGuid().ToString();
 			sb = new StringBuilder();
 		}
 
-		public async Task<(object?, IError?)> Ask(GoalStep step, AskOptions askOptions, Callback? callback = null, IError? error = null)
+		public async Task<(object?, IError?)> Ask(GoalStep step, object question, int statusCode = 202, Callback? callback = null, IError? error = null)
 		{
-			return await IForm.Ask(askOptions, callback, error);
+			return await IForm.Ask(question, callback, error);
 		}
 
 		public async Task Execute(string javascriptToCall)

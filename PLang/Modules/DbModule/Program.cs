@@ -248,10 +248,19 @@ namespace PLang.Modules.DbModule
 			var transaction = goal.GetVariable<IDbTransaction>();
 			if (transaction == null) return new ProgramError("No transaction found");
 
-			transaction.Commit();
-			transaction.Connection?.Close();
-
-			goal.RemoveVariable<IDbTransaction>();
+			try
+			{
+				transaction.Commit();
+				transaction.Connection?.Close();
+			}
+			catch (Exception ex)
+			{
+				return new ExceptionError(ex, "Transaction commited, but should not", goal, goalStep);
+			}
+			finally
+			{
+				goal.RemoveVariable<IDbTransaction>();
+			}
 
 			return null;
 		}
@@ -413,6 +422,7 @@ namespace PLang.Modules.DbModule
 				if (connection is SqliteConnection sqliteConnection)
 				{
 					using var command = connection.CreateCommand();
+					command.Transaction = transaction;
 					command.CommandText = "PRAGMA foreign_keys = ON;";
 					command.ExecuteNonQuery();
 
@@ -639,6 +649,10 @@ namespace PLang.Modules.DbModule
 				var con = (DbConnection)prep.connection;
 				await using var cmd = con.CreateCommand();
 				cmd.CommandText = prep.sql;
+				if (prep.transaction != null)
+				{
+					cmd.Transaction = (DbTransaction)prep.transaction;
+				}
 
 				// Add parameters if any:
 				if (sqlParameters is not null)
