@@ -475,24 +475,25 @@ namespace PLang.Modules.VariableModule
 
 		}
 
-		//public async Task SetVariableWithCondition([HandlesVariableAttribute] string variableName, bool boolValue, object valueIfTrue, object valueIfFalse)
-		//{
-		//	if (boolValue)
-		//	{
-		//		await SetVariable(variableName, valueIfTrue);
-		//	}
-		//	else
-		//	{
-		//		await SetVariable(variableName, valueIfFalse);
-		//	}
-		//}
+		
+		public async Task SetVariableWithCondition([HandlesVariableAttribute] string variableName, bool boolValue, object valueIfTrue, object valueIfFalse)
+		{
+			if (boolValue)
+			{
+				await SetVariable(variableName, valueIfTrue);
+			}
+			else
+			{
+				await SetVariable(variableName, valueIfFalse);
+			}
+		}
+		
 
 		[Description(@"Compare two variables and assign the specified variable name the result of the comparison")]
 		public async Task SetVariableWithComparison([HandlesVariableAttribute] string variableName, object leftValue, object rightValue)
 		{
 			bool comparisonResult = false;
-			Console.WriteLine(variableName);
-		
+
 			if (leftValue.Equals(rightValue))
 			{
 				comparisonResult = true;
@@ -500,7 +501,7 @@ namespace PLang.Modules.VariableModule
 		
 			if (variableName.Equals("%testResult%"))
 			{
-				memoryStack.Put(variableName, new { Value = true, ExpectedValue = rightValue, ActualValue = leftValue });
+				memoryStack.Put(variableName, new { Value = comparisonResult, ExpectedValue = rightValue, ActualValue = leftValue }, goalStep: goalStep);
 				return;
 			}
 		
