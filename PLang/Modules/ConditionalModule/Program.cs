@@ -62,7 +62,7 @@ namespace PLang.Modules.ConditionalModule
 			return await ExecuteResult(result, goalToCallIfTrue, goalToCallIfFalse, throwErrorOnTrue, throwErrorOnFalse);
 		}
 
-		[Description("Operator: ==|!=|<|>|<=|>=|in|contains|startswith|endswith|indexOf. IsNot property indicates if the condition is a negation of the specified operator. True for ‘is not’, ‘does not’, etc.")]
+		[Description("Operator: ==|!=|<|>|<=|>=|in|contains|startswith|endswith|indexOf. IsNot property indicates if the condition is a negation of the specified operator. True for ‘is not’, ‘does not’, etc. && = \"AND\", || = \"OR\"")]
 		public async Task<(object?, IError?)> SimpleCondition(SimpleCondition condition, 
 			GoalToCallInfo? goalToCallIfTrue = null, GoalToCallInfo? goalToCallIfFalse = null,
 			ErrorInfo? throwErrorOnTrue = null, ErrorInfo? throwErrorOnFalse = null)
@@ -446,6 +446,7 @@ namespace PLang.Modules.ConditionalModule
 				var module = GetProgramModule<ThrowErrorModule.Program>();
 				return (returnVars, await module.Throw(throwErrorOnFalse.errorMessage ?? "Is not empty", throwErrorOnFalse.type, throwErrorOnFalse.statusCode));
 			}
+			if (!result) return (returnVars, error);
 
 			var nextStep = goalStep.NextStep;
 			if (nextStep != null)

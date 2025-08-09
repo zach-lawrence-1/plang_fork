@@ -8,6 +8,7 @@ using PLang.Errors.Types;
 using PLang.Interfaces;
 using PLang.Models;
 using PLang.Models.Formats;
+using PLang.Modules.WebCrawlerModule.Models;
 using PLang.Utils;
 using System.ComponentModel;
 using System.Net.Http.Headers;
@@ -373,7 +374,7 @@ namespace PLang.Modules.HttpModule
 		public virtual async Task<(object? Data, IError? Error, Properties Properties)> Request(string url, string method, object? data = null, bool doNotSignRequest = false,
 			Dictionary<string, object>? headers = null, string encoding = "utf-8", string contentType = "application/json", int timeoutInSeconds = 30)
 		{
-
+			
 			var requestUrl = this.variableHelper.LoadVariables(url);
 			if (requestUrl == null)
 			{
@@ -642,9 +643,9 @@ namespace PLang.Modules.HttpModule
 			var identity = programFactory.GetProgram<Modules.IdentityModule.Program>(goalStep);
 			var signature = await identity.Sign(body, contracts: contracts.ToList(), headers: headers);
 			var json = JsonConvert.SerializeObject(signature);
-			var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
+			//var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
 
-			request.Headers.TryAddWithoutValidation("X-Signature", base64);
+			request.Headers.TryAddWithoutValidation("X-Signature", json);
 
 		}
 
