@@ -71,7 +71,7 @@ namespace PLang.Modules.ConditionalModule
 			{
 				"AND" => n.Conditions!.All(Evaluate),
 				"OR" => n.Conditions!.Any(Evaluate),
-				_ => throw new NotSupportedException($"Logic '{n.Logic}'")
+				_ => throw new NotSupportedException($"Logic '{n.Logic}'") //broke here
 			};
 
 			/* helpers */

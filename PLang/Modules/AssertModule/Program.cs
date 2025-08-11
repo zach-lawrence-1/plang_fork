@@ -10,13 +10,26 @@ using System.Diagnostics;
 
 namespace PLang.Modules.AssertModule
 {
-	[Description("Assert object/variable/text or other entity to be what is epxected. For unit testing")]
+	[Description("Assert object/variable/text or other entity to be what is expected. For unit testing")]
 	public class Program : BaseProgram
 	{
 
 		public Program()
 		{
 		}
+
+		/*
+		[Description(@"Compare two variables and assign the specified variable name the result of the comparison")]
+		public async Task<IError?> SetVariableWithComparison([HandlesVariableAttribute] string variableName, object leftValue, object rightValue)
+		{
+			if (!leftValue.Equals(rightValue))
+			{
+				return new AssertError($"Expected value {rightValue} is not equal to actual value {leftValue}", rightValue, leftValue, goalStep);
+			}
+
+			return null;
+		}
+		*/
 
 		[Description("User can force the type of expectedValue and actualValue, it should be FullName type, e.g. System.Int64, System.Double, etc. By default the types are not set and the runtime will try to match them")]
 		public async Task<IError?> Contains(object? contains, object? actualValue)
@@ -37,8 +50,6 @@ namespace PLang.Modules.AssertModule
 
 			if (!result) return new AssertError($"The value does not contain value.", strContains, strActual, goalStep);
 			return null;
-
-
 		}
 
 
@@ -82,18 +93,11 @@ namespace PLang.Modules.AssertModule
 				}
 			}
 
-			//Console.WriteLine("types: " + actualValue.GetType() + " " + expectedValue.GetType());
-
-			//Console.WriteLine("actual value: " + actualValue + " expected: " + expectedValue + " result: " + result);
-			
-
 			if (result) {
-				memoryStack.Put(resultVariable, new { Message = "Success", Success = true, ExpectedValue = expectedValue, ActualValue = actualValue, StepText = goalStep.Text }, goalStep: goalStep);
 				return null;
 			}
 			 
-			memoryStack.Put(resultVariable, new { Message = "Failed", Success = false, ExpectedValue = expectedValue , ActualValue = actualValue, StepText = goalStep.Text }, goalStep: goalStep);
-			return null;	
+			return new AssertError("Comparison failed", expectedValue, actualValue, goalStep);
 		}
 	}
 }

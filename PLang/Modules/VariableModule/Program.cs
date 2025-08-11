@@ -489,24 +489,7 @@ namespace PLang.Modules.VariableModule
 		}
 		
 
-		[Description(@"Compare two variables and assign the specified variable name the result of the comparison")]
-		public async Task SetVariableWithComparison([HandlesVariableAttribute] string variableName, object leftValue, object rightValue)
-		{
-			bool comparisonResult = false;
-
-			if (leftValue.Equals(rightValue))
-			{
-				comparisonResult = true;
-			}
 		
-			if (variableName.Equals("%testResult%"))
-			{
-				memoryStack.Put(variableName, new { Value = comparisonResult, ExpectedValue = rightValue, ActualValue = leftValue }, goalStep: goalStep);
-				return;
-			}
-		
-			await SetVariable(variableName, comparisonResult);
-		}
 
 		[Description(@"Set value on variables or a default value is value is empty. Number can be represented with _, e.g. 100_000. If value is json, make sure to format it as valid json, use double quote("") by escaping it.  onlyIfValueIsSet can be define by user, null|""null""|""empty"" or value a user defines. Be carefull, there is difference between null and ""null"", to be ""null"" is must be defined by user.")]
 		public async Task SetValueOnVariablesOrDefaultIfValueIsEmpty([HandlesVariableAttribute] Dictionary<string, Tuple<object?, object?>> keyValues, bool doNotLoadVariablesInValue = false, bool keyIsDynamic = false, object? onlyIfValueIsNot = null)
