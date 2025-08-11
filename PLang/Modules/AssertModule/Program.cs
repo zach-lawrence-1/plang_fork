@@ -18,18 +18,6 @@ namespace PLang.Modules.AssertModule
 		{
 		}
 
-		/*
-		[Description(@"Compare two variables and assign the specified variable name the result of the comparison")]
-		public async Task<IError?> SetVariableWithComparison([HandlesVariableAttribute] string variableName, object leftValue, object rightValue)
-		{
-			if (!leftValue.Equals(rightValue))
-			{
-				return new AssertError($"Expected value {rightValue} is not equal to actual value {leftValue}", rightValue, leftValue, goalStep);
-			}
-
-			return null;
-		}
-		*/
 
 		[Description("User can force the type of expectedValue and actualValue, it should be FullName type, e.g. System.Int64, System.Double, etc. By default the types are not set and the runtime will try to match them")]
 		public async Task<IError?> Contains(object? contains, object? actualValue)
