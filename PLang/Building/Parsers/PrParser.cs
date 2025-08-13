@@ -77,6 +77,7 @@ namespace PLang.Building.Parsers
 			return eventGoals;
 		}
 
+		//may need to modify this
 		public virtual Goal? ParsePrFile(string absolutePrFilePath)
 		{
 			if (!absolutePrFilePath.Contains(".pr"))
@@ -231,12 +232,12 @@ namespace PLang.Building.Parsers
 			return this.goals;
 		}
 
-		public List<Goal> LoadAllGoals(bool force = false)
+		public List<Goal> LoadAllGoals(bool force = false, string dir = "./")
 		{
 			Stopwatch stopwatch = Stopwatch.StartNew();
 			logger.LogDebug($"   -- Loading all goals(force:{force})");
 			
-			GetGoals(force);
+			GetGoals(force, dir);
 			GetSystemGoals(force);
 
 			if (force)
@@ -249,7 +250,6 @@ namespace PLang.Building.Parsers
 		}
 
 		public List<Goal> LoadAllGoalsByPath(string dir) { 
-
 			string buildDir = fileSystem.Path.Join(dir, ".build");
 			if (!fileSystem.Directory.Exists(buildDir))
 			{
@@ -315,11 +315,11 @@ namespace PLang.Building.Parsers
 			}
 			return goals;
 		}
-		public List<Goal> GetAllGoals()
+		public List<Goal> GetAllGoals(bool force = false, string dir = "./")
 		{
-			if (goals.Count > 0) return goals;
+			if (goals.Count > 0 && dir == "./") return goals;
 
-			LoadAllGoals();
+			LoadAllGoals(force, dir);
 			return goals;
 		}
 
@@ -436,14 +436,17 @@ namespace PLang.Building.Parsers
 			return goal;
 		}
 
-		public List<Goal> GetGoals(bool force = false)
+		public List<Goal> GetGoals(bool force = false, string dir = "./")
 		{
-			if (!force && goals != null) return goals;
+			if (!force && goals != null && dir == "./") return goals;
 			
-			goals = LoadAllGoalsByPath(fileSystem.RootDirectory);
+			if (dir == "./")
+				goals = LoadAllGoalsByPath(fileSystem.RootDirectory);
+			else
+				goals = LoadAllGoalsByPath(dir);
+			
 			publicGoals = goals.Where(p => p.Visibility == Visibility.Public).ToList();
 			
-
 			return goals;
 		}
 

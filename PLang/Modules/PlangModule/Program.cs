@@ -54,7 +54,34 @@ namespace PLang.Modules.PlangModule
 			if (path.EndsWith(".goal"))
 			{
 				goals = prParser.GetAllGoals().Where(p => p.AbsoluteGoalPath.Equals(path, StringComparison.OrdinalIgnoreCase)).ToList();
-			} else if (path.EndsWith(".pr"))
+
+				if (goals.Count() == 0)
+				{
+					List<Goal> externalGoals = new List<Goal>();
+					Console.WriteLine("no goals found, checking path");
+					//TODO: first validate that the path given is valid
+					//Then trim off the goal file name off the end of the path (is there a function for this in plang?)
+					//Then call getallgoals where the passing in the folder path and doing the check above where the absolute path matches the file path
+					string? folderPath = System.IO.Path.GetDirectoryName(path);
+					Console.WriteLine("folderpath: " + folderPath);
+
+					if (folderPath == null)
+					{
+						return (null, new ProgramError("Directory not found"));
+					}
+
+					//get external goals
+					externalGoals = prParser.GetAllGoals(false, folderPath).ToList();
+					goals = externalGoals;
+				}
+
+				Console.WriteLine(path + ":      ");
+				foreach (Goal g in goals)
+				{
+					Console.WriteLine(g.AbsoluteGoalPath);
+				}
+			}
+			else if (path.EndsWith(".pr"))
 			{
 				goals = prParser.GetAllGoals().Where(p => p.AbsolutePrFilePath.Equals(path, StringComparison.OrdinalIgnoreCase)).ToList();
 			}
@@ -68,7 +95,8 @@ namespace PLang.Modules.PlangModule
 				{
 					goals = prParser.GetAllGoals().Where(p => p.AbsoluteGoalFolderPath.StartsWith(path, StringComparison.OrdinalIgnoreCase)).ToList();
 				}
-			} else
+			}
+			else
 			{
 				return (null, new ProgramError($"The path {fileOrFolderPath} could not be found, searched for it at {path}"));
 			}
@@ -91,7 +119,7 @@ namespace PLang.Modules.PlangModule
 			if (propertiesToExtract == null || propertiesToExtract.Count == 0) return (goals, null);
 
 			JArray array = new JArray();
-			
+
 			foreach (var goal in goals)
 			{
 				var jObject = new JObject();
@@ -122,7 +150,7 @@ namespace PLang.Modules.PlangModule
 			var result = await GetGoals(appPath, visibility, propertiesToExtract);
 			if (result.Error != null) return (null, result.Error);
 
-			var goals = (List<Goal>) result.Goals;
+			var goals = (List<Goal>)result.Goals;
 			return (goals.Where(p => p.IsSetup).ToList(), null);
 		}
 
@@ -151,7 +179,7 @@ namespace PLang.Modules.PlangModule
 
 			var classDescriptionHelper = new ClassDescriptionHelper();
 			return classDescriptionHelper.GetClassDescription(programType);
-			
+
 		}
 
 		public async Task<(object, IError)> Run(string @namespace, string @class, string method, Dictionary<string, object?>? Parameters)
@@ -274,7 +302,7 @@ namespace PLang.Modules.PlangModule
 
 		public async Task<(List<GoalStep>?, IError?)> GetSteps(string goalPath)
 		{
-			
+
 			string absoluteGoalPath = GetPath(goalPath);
 			string ext = fileSystem.Path.GetExtension(absoluteGoalPath);
 			if (string.IsNullOrEmpty(ext))
@@ -298,7 +326,7 @@ namespace PLang.Modules.PlangModule
 			}
 			return (goal.GoalSteps, null);
 		}
-		
+
 		public async Task<(GoalStep?, IError?)> GetStep(string goalPrPath, string stepPrFile)
 		{
 			string absoluteGoalPath = GetPath(goalPrPath);
@@ -357,7 +385,7 @@ namespace PLang.Modules.PlangModule
 		[Description("Run from a specific step and the following steps")]
 		public async Task<(object?, IError?)> RunFromStep(string prFileName)
 		{
-			
+
 			if (string.IsNullOrEmpty(prFileName))
 			{
 				return (null, new ProgramError($"prFileName is empty. I cannot run a step if I don't know what to run.", goalStep, function,
@@ -407,9 +435,9 @@ namespace PLang.Modules.PlangModule
 			{
 				return (newStep, new StepError($"Could not find instruction file after building. {ErrorReporting.CreateIssueShouldNotHappen}", step, StatusCode: 404));
 			}
-			
+
 			newStep.PrFile = fileSystem.File.ReadAllText(step.AbsolutePrFilePath);
-			
+
 			return (newStep, error);
 		}
 
@@ -426,14 +454,14 @@ namespace PLang.Modules.PlangModule
 		public async Task StartCSharpDebugger()
 		{
 			if (Debugger.IsAttached) return;
-			
+
 			Debugger.Launch();
 			AppContext.SetSwitch(ReservedKeywords.CSharpDebug, true);
 			AppContext.SetSwitch(ReservedKeywords.DetailedError, true);
 
 		}
 
-	
+
 
 		public class MethodInfoDto
 		{
@@ -505,4 +533,3 @@ namespace PLang.Modules.PlangModule
 		}
 	}
 }
-
