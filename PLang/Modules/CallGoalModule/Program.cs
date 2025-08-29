@@ -1,4 +1,5 @@
-﻿using PLang.Building.Parsers;
+﻿using PLang.Building.Model;
+using PLang.Building.Parsers;
 using PLang.Errors;
 using PLang.Errors.Runtime;
 using PLang.Interfaces;
@@ -99,6 +100,42 @@ namespace PLang.Modules.CallGoalModule
 				throw;
 			}
 
+		}
+
+		[Description("Call/Runs a goal defined outside of the current path. Something like call external goal GOALNAME from GOALPATH")]
+		public async Task<(object? Return, IError? Error)> RunExternalGoal(string goalPath, GoalToCallInfo goalInfo = null, bool waitForExecution = true,
+			int delayWhenNotWaitingInMilliseconds = 50, uint waitForXMillisecondsBeforeRunningGoal = 0, bool keepMemoryStackOnAsync = false,
+			bool isolated = false, bool disableSystemGoals = false, bool isEvent = false)
+		{
+			Console.WriteLine("test", goalPath);
+			return (null, null);
+			try
+			{
+				string path = (goal != null) ? goal.RelativeAppStartupFolderPath : "/";
+				int indent = (goalStep == null) ? 0 : goalStep.Indent;
+				var context = engine.GetContext();
+
+				var result = await pseudoRuntime.RunGoal(engine, context, path, goalInfo, goal,
+						waitForExecution, delayWhenNotWaitingInMilliseconds, waitForXMillisecondsBeforeRunningGoal, indent, keepMemoryStackOnAsync, isolated, disableSystemGoals, isEvent);
+
+				if (result.error is Return ret)
+				{
+					return (ret.ReturnVariables, null);
+				}
+
+				/*
+				if (result.error is EndGoal endGoal && (goal == null || GoalHelper.IsPartOfCallStack(goal, endGoal)) && endGoal.Levels == 0)
+				{
+					return (result.Variables, null);
+				}*/
+
+				return (result.Variables, result.error);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine("RunGoal:" + ex.ToString());
+				throw;
+			}
 		}
 
 		/*

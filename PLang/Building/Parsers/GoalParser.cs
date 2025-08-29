@@ -97,11 +97,11 @@ namespace PLang.Building.Parsers
 			}
 			if (!Path.IsPathFullyQualified(rootPath))
 			{
-				throw new Exception("not qualitfied");
+				throw new Exception("not qualified");
 			}
 			if (!Path.IsPathFullyQualified(rootBuildPath))
 			{
-				throw new Exception("not qualitfied .build");
+				throw new Exception("not qualified .build");
 			}
 			(content, var injections) = HandleInjections(content, true);
 

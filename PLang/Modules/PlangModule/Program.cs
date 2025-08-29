@@ -1,6 +1,6 @@
 ﻿using LightInject;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -12,6 +12,7 @@ using PLang.Errors;
 using PLang.Errors.Builder;
 using PLang.Errors.Runtime;
 using PLang.Interfaces;
+using PLang.Models;
 using PLang.Runtime;
 using PLang.SafeFileSystem;
 using PLang.Utils;
@@ -54,32 +55,6 @@ namespace PLang.Modules.PlangModule
 			if (path.EndsWith(".goal"))
 			{
 				goals = prParser.GetAllGoals().Where(p => p.AbsoluteGoalPath.Equals(path, StringComparison.OrdinalIgnoreCase)).ToList();
-
-				if (goals.Count() == 0)
-				{
-					List<Goal> externalGoals = new List<Goal>();
-					Console.WriteLine("no goals found, checking path");
-					//TODO: first validate that the path given is valid
-					//Then trim off the goal file name off the end of the path (is there a function for this in plang?)
-					//Then call getallgoals where the passing in the folder path and doing the check above where the absolute path matches the file path
-					string? folderPath = System.IO.Path.GetDirectoryName(path);
-					Console.WriteLine("folderpath: " + folderPath);
-
-					if (folderPath == null)
-					{
-						return (null, new ProgramError("Directory not found"));
-					}
-
-					//get external goals
-					externalGoals = prParser.GetAllGoals(false, folderPath).ToList();
-					goals = externalGoals;
-				}
-
-				Console.WriteLine(path + ":      ");
-				foreach (Goal g in goals)
-				{
-					Console.WriteLine(g.AbsoluteGoalPath);
-				}
 			}
 			else if (path.EndsWith(".pr"))
 			{
@@ -154,7 +129,13 @@ namespace PLang.Modules.PlangModule
 			return (goals.Where(p => p.IsSetup).ToList(), null);
 		}
 
+		//TODO: figure out how to run a goal and then how to run a single hardcoded external goal in order to find what information I need
+		public async void GetExternalGoals()
+		{
+			return;
+		}
 
+		
 		public async Task<(string?, IError?)> GetModules(string stepText, List<string> excludeModules)
 		{
 			var modulesAvailable = typeHelper.GetModulesAsString(excludeModules);

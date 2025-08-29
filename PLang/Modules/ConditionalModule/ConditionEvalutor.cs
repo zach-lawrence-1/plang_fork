@@ -14,9 +14,9 @@ namespace PLang.Modules.ConditionalModule
 	public static class ConditionEvaluator
 	{
 		public enum ConditionKind { Simple, Compound }
-		[Description("operators: ==|!=|<|>|<=|>=|in|contains|startswith|endswith|indexOf")]
+		[Description("operators: ==|!=|<|>|<=|>=|in|contains|does not contain|startswith|endswith|indexOf")]
 		public record CompoundCondition : Condition;
-		[Description("Operator: ==|!=|<|>|<=|>=|in|contains|startswith|endswith|indexOf")]
+		[Description("Operator: ==|!=|<|>|<=|>=|in|contains|does not contain|startswith|endswith|indexOf")]
 		public record SimpleCondition : Condition;
 		public record Condition
 		{
@@ -61,6 +61,7 @@ namespace PLang.Modules.ConditionalModule
 				"<=" => Cmp(n) <= 0,
 				"in" => n.RightValue is IEnumerable r && r.Cast<object>().Contains(n.LeftValue),
 				"contains" => Has(n.LeftValue, n.RightValue),
+				"does not contain" => !Has(n.LeftValue, n.RightValue),
 				"startsWith" => Str(n, (s, x) => s.StartsWith(x, StringComparison.Ordinal)),
 				"endsWith" => Str(n, (s, x) => s.EndsWith(x, StringComparison.Ordinal)),
 				"indexOf" => Str(n, (s, x) => s.IndexOf(x, StringComparison.Ordinal) >= 0),
