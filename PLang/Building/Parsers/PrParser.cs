@@ -1,4 +1,5 @@
 ﻿using Microsoft.IdentityModel.Tokens;
+using Newtonsoft.Json.Linq;
 using PLang.Building.Model;
 using PLang.Errors;
 using PLang.Errors.Runtime;
@@ -15,16 +16,17 @@ using System.Diagnostics;
 using System.Text.RegularExpressions;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.Export;
 using static PLang.Runtime.Startup.ModuleLoader;
+using static PLang.Utils.VariableHelper;
 
 namespace PLang.Building.Parsers
 {
 	public class PrParser
 	{
-		private List<Goal> goals = null!;
-		private List<Goal> publicGoals = null!;
-		private List<Goal> systemGoals = null!;
-		private List<Goal> runtimeEventsGoals = null!;
-		private List<Goal> builderEventsGoals = null!;
+		private IReadOnlyList<Goal> goals = null!;
+		private IReadOnlyList<Goal> publicGoals = null!;
+		private IReadOnlyList<Goal> systemGoals = null!;
+		private IReadOnlyList<Goal> runtimeEventsGoals = null!;
+		private IReadOnlyList<Goal> builderEventsGoals = null!;
 
 		ConcurrentDictionary<string, List<Goal>> Events = new();
 		ConcurrentDictionary<string, List<Goal>> SystemEvents = new();
@@ -40,9 +42,10 @@ namespace PLang.Building.Parsers
 
 			goals = GetGoals();
 			systemGoals = GetSystemGoals();
-
+			
 			builderEventsGoals = GetEventsFiles(true);
 			runtimeEventsGoals = GetEventsFiles(false);
+
 		}
 
 		public Goal? GetEvent(string name)
@@ -142,6 +145,13 @@ namespace PLang.Building.Parsers
 			AdjustPathsToOS(goal);
 			goal.IsSystem = absolutePrFilePath.Contains(fileSystem.SystemDirectory);
 
+			/* save memory */
+			goal.Description = null;
+			if (goal.BuilderVersion != null)
+			{
+				goal.BuilderVersion = string.IsInterned(goal.BuilderVersion) ?? string.Intern(goal.BuilderVersion);
+			}
+
 
 			for (int i = 0; i < goal.GoalSteps.Count; i++)
 			{
@@ -150,11 +160,29 @@ namespace PLang.Building.Parsers
 				goal.GoalSteps[i].AppStartupPath = appAbsoluteStartupPath.AdjustPathToOs();
 				goal.GoalSteps[i].Number = i;
 				goal.GoalSteps[i].Index = i;
+				
 
 				//remove from memory uneeded data for runtime
 				goal.GoalSteps[i].Goal = goal;
 				goal.GoalSteps[i].LlmRequest = null;
 				goal.GoalSteps[i].PrFile = null;
+				goal.GoalSteps[i].Description = null;
+				goal.GoalSteps[i].UserIntent = null;
+				goal.GoalSteps[i].Confidence = null;
+
+				// testing to reduce memory of repeated strings
+				if (goal.GoalSteps[i].ModuleType != null)
+				{
+					goal.GoalSteps[i].ModuleType = string.IsInterned(goal.GoalSteps[i].ModuleType) ?? string.Intern(goal.GoalSteps[i].ModuleType);
+				}
+				if (goal.GoalSteps[i].BuilderVersion != null)
+				{
+					goal.GoalSteps[i].BuilderVersion = string.IsInterned(goal.GoalSteps[i].BuilderVersion) ?? string.Intern(goal.GoalSteps[i].BuilderVersion);
+				}
+				if (goal.GoalSteps[i].PrFileName != null)
+				{
+					goal.GoalSteps[i].PrFileName = string.IsInterned(goal.GoalSteps[i].PrFileName) ?? string.Intern(goal.GoalSteps[i].PrFileName);
+				}
 			}
 
 			return goal;
@@ -195,15 +223,16 @@ namespace PLang.Building.Parsers
 			{
 				instructions.TryAdd(step.AbsolutePrFilePath, instruction);
 			}
+			instruction.LlmRequest = null;
 			return instruction;
 
 		}
-		public List<Goal> ForceLoadAllGoals()
+		public IReadOnlyList<Goal> ForceLoadAllGoals()
 		{
 			var goals = LoadAllGoals(true);
 			return goals;
 		}
-
+		/*
 		public async Task<List<Goal>> GoalFromGoalsFolder(string appName, IFileAccessHandler fileAccessHandler)
 		{
 			var path = AppContext.BaseDirectory;
@@ -229,9 +258,9 @@ namespace PLang.Building.Parsers
 			}
 
 			return this.goals;
-		}
+		}*/
 
-		public List<Goal> LoadAllGoals(bool force = false)
+		public IReadOnlyList<Goal> LoadAllGoals(bool force = false)
 		{
 			Stopwatch stopwatch = Stopwatch.StartNew();
 			logger.LogDebug($"   -- Loading all goals(force:{force})");
@@ -316,7 +345,7 @@ namespace PLang.Building.Parsers
 			}
 			return goals;
 		}
-		public List<Goal> GetAllGoals()
+		public IReadOnlyList<Goal> GetAllGoals()
 		{
 			if (goals.Count > 0) return goals;
 
@@ -324,7 +353,7 @@ namespace PLang.Building.Parsers
 			return goals;
 		}
 
-		public List<Goal> GetPublicGoals()
+		public IReadOnlyList<Goal> GetPublicGoals()
 		{
 			if (publicGoals.Count > 0) return publicGoals;
 			LoadAllGoals();
@@ -428,7 +457,8 @@ namespace PLang.Building.Parsers
 			if (possibleGoals.Count == 1) return possibleGoals[0];
 			if (possibleGoals.Count > 1)
 			{
-				var goalNames = possibleGoals.Select(p => {
+				var goalNames = possibleGoals.Select(p =>
+				{
 					return p.RelativeGoalPath;
 				});
 				throw new GoalNotFoundException($"{goalNameOrPath} Could not be found. There are {possibleGoals.Count} to choose from. {string.Join(",", goalNames)}", appStartupPath, goalNameOrPath);
@@ -437,7 +467,7 @@ namespace PLang.Building.Parsers
 			return goal;
 		}
 
-		public List<Goal> GetGoals(bool force = false)
+		public IReadOnlyList<Goal> GetGoals(bool force = false)
 		{
 			if (!force && goals != null) return goals;
 
@@ -448,7 +478,7 @@ namespace PLang.Building.Parsers
 			return goals;
 		}
 
-		public List<Goal> GetSystemGoals(bool force = false)
+		public IReadOnlyList<Goal> GetSystemGoals(bool force = false)
 		{
 			if (!force && systemGoals != null) return systemGoals;
 
@@ -505,7 +535,7 @@ namespace PLang.Building.Parsers
 		}
 
 
-		public (List<Instruction>? Instructions, IError? Error) GetInstructions(List<GoalStep> steps, string? functionName = null)
+		public (List<Instruction>? Instructions, IError? Error) GetInstructions(IReadOnlyList<GoalStep> steps, string? functionName = null)
 		{
 			var instructions = new List<Instruction>();
 			foreach (var step in steps)
@@ -522,7 +552,7 @@ namespace PLang.Building.Parsers
 
 		}
 
-		public List<Goal> GetEventsFiles(bool builder = false)
+		public IReadOnlyList<Goal> GetEventsFiles(bool builder = false)
 		{
 			if (builderEventsGoals != null && builder) return builderEventsGoals;
 			if (runtimeEventsGoals != null && !builder) return runtimeEventsGoals;
@@ -565,28 +595,34 @@ namespace PLang.Building.Parsers
 
 		internal void ClearVariables()
 		{
-			foreach (var goal in goals)
+			for (int i = 0; i < goals.Count; i++)
 			{
-				foreach (var variable in goal.Variables)
+				for (int b = 0; b < goals[i].Variables.Count; b++)
 				{
-					if (variable.DisposeFunc != null)
+					if (goals[i].Variables[b].DisposeFunc != null)
 					{
-						variable.DisposeFunc().Wait();
+						goals[i].Variables[b]?.DisposeFunc()?.Wait();
 					}
+					
 				}
-
-				foreach (var step in goal.GoalSteps)
+				
+				goals[i].Variables.Clear();
+				goals[i].Variables = new();
+				for (int b = 0; b < goals[i].GoalSteps.Count; b++)
 				{
-					step.Callback = null;
-					foreach (var variable in step.Variables)
+					for (int c = 0; c < goals[i].GoalSteps[b].Variables.Count; c++)
 					{
-						if (variable.DisposeFunc != null)
+						if (goals[i].GoalSteps[b].Variables[c]?.DisposeFunc != null)
 						{
-							variable.DisposeFunc().Wait();
+							goals[i].GoalSteps[b].Variables[c]?.DisposeFunc()?.Wait();
 						}
 					}
+
+					goals[i].GoalSteps[b].Variables.Clear();
+					goals[i].GoalSteps[b].Variables = new();
 				}
 			}
+
 		}
 	}
 }

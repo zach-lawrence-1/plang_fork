@@ -40,7 +40,7 @@ namespace PLang.Events
 		Task<(object? Variables, IError Error)> RunOnErrorStepEvents(IError error, Goal goal, GoalStep step, bool isBuilder = false);
 		Task<(object? Variables, IError Error)> RunGoalErrorEvents(Goal goal, int goalStepIndex, IError error, bool isBuilder = false);
 		Task<(object? Variables, IError? Error)> AppErrorEvents(IError error);
-		void SetContainer(IServiceContainer container);
+		
 		void SetActiveEvents(ConcurrentDictionary<string, string> activeEvents);
 		ConcurrentDictionary<string, string> GetActiveEvents();
 		Task<(object? Variables, IError? Error)> RunOnModuleError(MethodInfo method, IError error, Exception ex);
@@ -51,30 +51,27 @@ namespace PLang.Events
 	{
 		private readonly IPLangFileSystem fileSystem;
 		private readonly PrParser prParser;
-		private readonly PLangAppContext context;
+		private readonly PLangAppContext appContext;
+		private readonly IPLangContextAccessor contextAccessor;
 		private readonly ILogger logger;
-		private readonly Modules.CallGoalModule.Program caller;
-		private readonly MemoryStack memoryStack;
+		private readonly IEngine engine;
+		private readonly IPseudoRuntime pseudoRuntime;
 		private List<EventBinding>? runtimeEvents = null;
 		private List<EventBinding>? builderEvents = null;
 		private IServiceContainer? container;
 		private ConcurrentDictionary<string, string> ActiveEvents;
-		public EventRuntime(IPLangFileSystem fileSystem, PrParser prParser, PLangAppContext context, ILogger logger, Modules.CallGoalModule.Program caller, MemoryStack memoryStack)
+		public EventRuntime(IPLangFileSystem fileSystem, PrParser prParser, PLangAppContext appContext, IPLangContextAccessor contextAccessor, ILogger logger, IEngine engine, IPseudoRuntime pseudoRuntime)
 		{
 			this.fileSystem = fileSystem;
 			this.prParser = prParser;
-			this.context = context;
+			this.appContext = appContext;
+			this.contextAccessor = contextAccessor;
 			this.logger = logger;
-			this.caller = caller;
-			this.memoryStack = memoryStack;
+			this.engine = engine;
+			this.pseudoRuntime = pseudoRuntime;
 			this.ActiveEvents = new();
 		}
 
-		public void SetContainer(IServiceContainer container)
-		{
-			this.container = container;
-			caller.Init(container, null, null, null, null);
-		}
 
 		public void SetActiveEvents(ConcurrentDictionary<string, string> activeEvents)
 		{
@@ -150,16 +147,14 @@ namespace PLang.Events
 					if (eventBinding != null) continue;
 
 					bool isLocal = goal.AbsolutePrFolderPath.StartsWith(fileSystem.Path.Join(fileSystem.RootDirectory, ".build"));
-					var binding = step.EventBinding with { Goal = goal, GoalStep = step, IsOnStep = false, IsLocal = isLocal };
+					var binding = step.EventBinding with { Goal = goal, GoalStep = step, IsOnStep = false, IsLocal = isLocal, IsSystem = goal.IsSystem };
 					events.Add(binding);
 				}
 
-				if (container != null && goal.Injections != null)
+				if (goal.Injections?.Count > 0)
 				{
-					foreach (var injection in goal.Injections)
-					{
-						container.RegisterForPLangUserInjections(injection.Type, injection.Path, injection.IsGlobal, injection.EnvironmentVariable, injection.EnvironmentVariableValue);
-					}
+					throw new Exception("Waiting for this to happen, injection should be through step, not here");
+					
 				}
 				logger.LogDebug($" - Done loading file - {stopwatch.ElapsedMilliseconds}");
 			}
@@ -226,6 +221,7 @@ namespace PLang.Events
 
 		public async Task<(object? Variables, IError? Error)> RunStartEndEvents(string eventType, string eventScope, Goal goal, bool isBuilder = false)
 		{
+
 			var events = (isBuilder) ? await GetBuilderEvents() : await GetRuntimeEvents();
 			if (events == null) return (null, null);
 
@@ -244,8 +240,14 @@ namespace PLang.Events
 
 				ActiveEvents.TryAdd(eve.Id, eve.GoalToCall.Name);
 				logger.LogDebug("Run event type {0} on scope {1}, binding to {2} calling {3}", eventType, eventScope, eve.GoalToBindTo, eve.GoalToCall);
+				bool disableSystemGoals = false;
+				if (!eve.IncludeOsGoals && !eve.IsSystem)
+				{
+					disableSystemGoals = true;
+				}
 
-				var task = caller.RunGoal(eve.GoalToCall, isolated: !eve.IsLocal, isEvent: true);
+				//var task = caller.RunGoal(eve.GoalToCall, isolated: !eve.IsLocal, isEvent: true);
+				var task = pseudoRuntime.RunGoal(engine, contextAccessor, "", eve.GoalToCall, goal, eve.WaitForExecution, 0, 0, 0, false, false, disableSystemGoals, true);
 				if (eve.WaitForExecution)
 				{
 					await task;
@@ -254,14 +256,14 @@ namespace PLang.Events
 				ActiveEvents.Remove(eve.Id, out _);
 
 				if (result.Error == null) continue;
-				if (result.Error is RuntimeEventError ree) return result;
-				if (result.Error is BuilderEventError bee) return result;
+				if (result.Error is RuntimeEventError ree) return (result.Variables, result.Error);
+				if (result.Error is BuilderEventError bee) return (result.Variables, result.Error);
 
 				if (isBuilder)
 				{
-					return (result.Return, new BuilderEventError(result.Error.Message, eve, InitialError: result.Error));
+					return (result.Variables, new BuilderEventError(result.Error.Message, eve, InitialError: result.Error));
 				}
-				return (result.Return, new RuntimeEventError(result.Error.Message, eve, InitialError: result.Error));
+				return (result.Variables, new RuntimeEventError(result.Error.Message, eve, InitialError: result.Error));
 			}
 			return (null, null);
 
@@ -287,7 +289,7 @@ namespace PLang.Events
 			var events = await GetBuilderEvents();
 			if (events.Count == 0) return (null, null);
 
-			context.AddOrReplace(ReservedKeywords.Goal, goal);
+			appContext.AddOrReplace(ReservedKeywords.Goal, goal);
 
 			//when EventBuildBinding exists, then new RunGoalBuildEvents needs to be created that return IBuilderError, RunGoalEvents return IError
 			var result = await RunGoalEvents(eventType, goal, true);
@@ -325,9 +327,9 @@ namespace PLang.Events
 
 		public async Task<(object? Variables, IBuilderError? Error)> RunBuildStepEvents(string eventType, Goal goal, GoalStep step, int stepIdx)
 		{
-			context.AddOrReplace(ReservedKeywords.Goal, goal);
-			context.AddOrReplace(ReservedKeywords.Step, step);
-			context.AddOrReplace(ReservedKeywords.StepIndex, stepIdx);
+			appContext.AddOrReplace(ReservedKeywords.Goal, goal);
+			appContext.AddOrReplace(ReservedKeywords.Step, step);
+			appContext.AddOrReplace(ReservedKeywords.StepIndex, stepIdx);
 
 			var (vars, error) = await RunStepEvents(eventType, goal, step, true);
 			if (error != null) return (vars, new BuilderError(error));
@@ -365,19 +367,26 @@ namespace PLang.Events
 			if (eventsToRun.Count == 0) return (null, error);
 
 			List<object?> variables = new();
+			var context = contextAccessor.Current;
 
 			foreach (var eve in eventsToRun)
 			{
 				if (!HasAppBinding(eve, error)) continue;
 
-				var step = (error.Goal != null) ? error.Goal.GoalSteps[error.Goal.CurrentStepIndex] : null;
+				var step = context.CallingStep;
 
 				var result = await Run(eve, error.Goal, step, error);
-				/*
+				
 				Console.WriteLine("\n\n\n---------- error (EventRuntime.debug.output) | start -------------");
 				Console.WriteLine($@"Type:{error.GetType()} | Message:{error.Message}");
 				Console.WriteLine(error.ToString());
-				*/
+				
+				if (context?.HttpContext != null)
+				{
+					Console.WriteLine("UserAgent:" + context.HttpContext.Request.Headers.UserAgent);
+				}
+				if (result.Error == error) continue;
+
 				if (result.Error != null && result.Error is not IErrorHandled)
 				{
 					error.ErrorChain.Add(result.Error);
@@ -391,8 +400,8 @@ namespace PLang.Events
 				{
 					error = null;
 				}
-				//Console.WriteLine($@"IsNull so handled:{(error == null)}");
-				//Console.WriteLine("---------- error (EventRuntime.debug.output) | end -------------\n\n\n");
+				Console.WriteLine($@"IsNull so handled:{(error == null)}");
+				Console.WriteLine("---------- error (EventRuntime.debug.output) | end -------------\n\n\n");
 				break;
 
 			}
@@ -418,6 +427,7 @@ namespace PLang.Events
 				if (!GoalHasBinding(goal, eve) || !HasAppBinding(eve, error)) continue;
 
 				var result = await Run(eve, goal, step, error);
+				if (result.Error == error) continue;
 
 				if (result.Error != null && result.Error is not IErrorHandled)
 				{
@@ -495,6 +505,8 @@ namespace PLang.Events
 				if (GoalHasBinding(goal, eve) && IsStepMatch(step, eve) && EventMatchesError(eve, error))
 				{
 					var eventError = await Run(eve, goal, step, error);
+					
+					if (eventError.Error == error) continue;
 
 					if (eventError.Error != null && eventError.Error is not IErrorHandled)
 					{
@@ -586,6 +598,7 @@ namespace PLang.Events
 					return (null, new RuntimeEventError("Goal name is empty", eve, sourceGoal, sourceStep));
 				}
 
+
 				eve.SourceGoal = sourceGoal;
 				eve.SourceStep = sourceStep;
 				eve.Instruction = sourceStep?.Instruction;
@@ -593,7 +606,7 @@ namespace PLang.Events
 				eve.GoalToCall.Parameters.AddOrReplace(ReservedKeywords.Event, eve);
 				eve.GoalToCall.Parameters.AddOrReplace(ReservedKeywords.IsEvent, true);
 				eve.GoalToCall.Parameters.AddOrReplace(ReservedKeywords.Error, error);
-
+				contextAccessor.Current.AddOrReplace(ReservedKeywords.Event, eve);
 				/*
 				//todo: hack, we should not be modifying the goal name. 
 				if (eve.IsOnStep) {
@@ -606,11 +619,11 @@ namespace PLang.Events
 				logger.LogDebug("Run event type {0} on scope {1}, binding to {2} calling {3}", eve.EventType.ToString(), eve.EventScope.ToString(), eve.GoalToBindTo, eve.GoalToCall);
 
 				ActiveEvents.TryAdd(eve.Id, eve.GoalToCall.Name);
-
+				/*
 				if (sourceStep != null) caller.SetStep(sourceStep);
 				if (sourceGoal != null) caller.SetGoal(sourceGoal);
-
-				Task<(object? Variables, IError? Error)> task;
+				*/
+				Task<(IEngine Engine, object? Variables, IError? Error)> task;
 				if (eve.GoalToCall.Name.StartsWith("apps/") || eve.GoalToCall.Name.StartsWith("/apps/"))
 				{
 					throw new Exception($"Callling app from event is not supported. {ErrorReporting.CreateIssueNotImplemented}");
@@ -618,7 +631,15 @@ namespace PLang.Events
 				}
 				else
 				{
-					task = caller.RunGoal(eve.GoalToCall, isolated: !eve.IsLocal, isEvent: true);
+					bool disableSystemGoals = false;
+					if (!eve.IncludeOsGoals && !eve.IsSystem)
+					{
+						disableSystemGoals = true;
+					}
+
+
+					//	task = caller.RunGoal(eve.GoalToCall, isolated: !eve.IsLocal, isEvent: true);
+					task = pseudoRuntime.RunGoal(engine, contextAccessor, "/", eve.GoalToCall, sourceGoal, eve.WaitForExecution, 0, 0, 0, false, !eve.IsLocal, disableSystemGoals, true);
 				}
 
 				if (eve.WaitForExecution)
@@ -662,7 +683,7 @@ namespace PLang.Events
 
 				//if (result.Error is null or IErrorHandled) return (Variables, null);
 				//if (result.Error is IUserInputError) return (Variables, result.Error);
-				if (result.Error is EndGoal endGoal)
+				if (result.Error is EndGoal endGoal && !endGoal.Terminate)
 				{
 					if (GoalHelper.IsPartOfCallStack(eve.Goal, endGoal))
 					{
@@ -676,12 +697,13 @@ namespace PLang.Events
 				{
 					return (Variables, (IEventError)ude);
 				}
+				if (result.Error == error) return (Variables, error);
 
 				if (isBuilder)
 				{
-					return (Variables, new BuilderEventError(result.Error.Message, eve, sourceGoal, sourceStep, InitialError: result.Error));
+					return (Variables, new BuilderEventError(result.Error.Message, eve, sourceGoal, sourceStep, result.Error.Key, result.Error.StatusCode, InitialError: result.Error));
 				}
-				return (Variables, new RuntimeEventError(result.Error.Message, eve, sourceGoal, sourceStep, InitialError: result.Error));
+				return (Variables, new RuntimeEventError(result.Error.Message, eve, sourceGoal, sourceStep, result.Error.Key, result.Error.StatusCode, InitialError: result.Error));
 			}
 			catch (Exception ex)
 			{
@@ -744,7 +766,7 @@ namespace PLang.Events
 		 * GoalToBindTo = GenerateData(.goal)?:ProcessFile => Binds to any goal name called ProcessFile in the GenerateData.goal, if multiple then it will bind to all
 		 */
 
-		public bool IsGoalInEventCallstack(Goal goal, string path, int level = 0)
+		public bool IsGoalInEventCallstack(Goal goal, string path, int level = 0, List<string>? callStackGoals = null)
 		{
 			if (level == 100)
 			{
@@ -752,9 +774,25 @@ namespace PLang.Events
 				logger.LogError($"To deep IsGoalInEventCallstack. goalName:{goal.GoalName} | path:{path} | parent:'{parent}'");
 				return false;
 			}
+
+			
+
 			if (goal.RelativePrPath == path) return true;
 			if (goal.ParentGoal == null) return false;
-			return IsGoalInEventCallstack(goal.ParentGoal, path, ++level);
+			if (callStackGoals?.Contains(goal.ParentGoal.RelativePrPath) == true) return false;
+
+			/*
+			 * TODO: fix this
+			 * 
+			 * List<string> callStack is a fix, the ParentGoal should not be set on goal object
+			 * it should be set on CallStack object that needs to be created, goal object should
+			 * not change at runtime. this is because if same goal is called 2 or more times
+			 * in a callstack, the parent goal is overwritten
+			 * */
+			if (callStackGoals == null) callStackGoals = new();
+			callStackGoals.Add(goal.ParentGoal.RelativePrPath);
+
+			return IsGoalInEventCallstack(goal.ParentGoal, path, ++level, callStackGoals);
 		}
 
 		public bool GoalHasBinding(Goal goal, EventBinding eventBinding)

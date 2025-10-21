@@ -37,7 +37,26 @@ namespace PLang.Modules.VariableModule
 			this.variableHelper = variableHelper;
 		}
 
-		public async Task<(object?, IError?)> Load([HandlesVariable] List<string> variables)
+		private async Task<(DataSource?, IError?)> GetDataSource(string? dataSourceName)
+		{
+			DataSource? dataSource = null;
+			var db = programFactory.GetProgram<DbModule.Program>(goalStep);
+			if (dataSourceName != null)
+			{
+				(dataSource, var error) = await db.GetDataSource(dataSourceName);
+				if (error != null) return (null, error);
+
+			}
+			else
+			{
+				dataSource = (await db.GetDataSources()).FirstOrDefault(p => p.IsDefault);
+			}
+			if (dataSource == null) return (null, new ProgramError($"Could not find data source(dataSourceName:'{dataSourceName}')", goalStep));
+
+			return (dataSource, null);
+		}
+
+		public async Task<(object?, IError?)> Load([HandlesVariable] List<string> variables, string? dataSourceName = null)
 		{
 			Dictionary<string, object?> varsWithValue = new();
 			foreach (var variable in variables)
@@ -45,21 +64,25 @@ namespace PLang.Modules.VariableModule
 				varsWithValue.Add(variable, null);
 			}
 
-			return await LoadWithDefaultValueInternal(varsWithValue);
+			var (dataSource, error) = await GetDataSource(dataSourceName);
+			if (error != null) return (null, error);
+
+			return await LoadWithDefaultValueInternal(varsWithValue, dataSource);
 		}
 
 		[Description(@"Loads(not setting a variable) a variable with a default value, key: variable name, value: default value. example: load %age%, default 10 => key:%age% value:10")]
-		public async Task<(object?, IError?)> LoadWithDefaultValue([HandlesVariable] Dictionary<string, object?> variablesWithDefaultValue)
+		public async Task<(object?, IError?)> LoadWithDefaultValue([HandlesVariable] Dictionary<string, object?> variablesWithDefaultValue, string? dataSourceName = null)
 		{
-			return await LoadWithDefaultValueInternal(variablesWithDefaultValue);
+			var (dataSource, error) = await GetDataSource(dataSourceName);
+			if (error != null) return (null, error);
+
+			return await LoadWithDefaultValueInternal(variablesWithDefaultValue, dataSource);
 		}
 
-		private async Task<(object?, IError?)> LoadWithDefaultValueInternal([HandlesVariable] Dictionary<string, object?> variablesWithDefaultValue)
+		private async Task<(object?, IError?)> LoadWithDefaultValueInternal([HandlesVariable] Dictionary<string, object?> variablesWithDefaultValue, DataSource dataSource)
 		{
 			var db = programFactory.GetProgram<DbModule.Program>(goalStep);
 
-			var dataSource = goalStep.GetVariable<DataSource>();
-			if (dataSource == null) return (null, new ProgramError("No datasource has been set"));
 
 			List<object?> objects = new();
 			foreach (var variable in variablesWithDefaultValue)
@@ -68,10 +91,10 @@ namespace PLang.Modules.VariableModule
 				parameters.Add(new ParameterInfo("System.String", "variable", variable.Key));
 				try
 				{
-					var result = await db.Select(dataSource, "SELECT * FROM __Variables__ WHERE variable=@variable", parameters);
+					var result = await db.Select([dataSource], "SELECT * FROM __Variables__ WHERE variable=@variable", parameters);
 					if (result.Error != null && result.Error.Message.Contains("no such table"))
 					{
-						var createTableResult = await CreateVariablesTable(db);
+						var createTableResult = await CreateVariablesTable(db, dataSource);
 						if (createTableResult.Error != null) return (null, createTableResult.Error);
 						return await LoadWithDefaultValue(variablesWithDefaultValue);
 					}
@@ -127,10 +150,9 @@ namespace PLang.Modules.VariableModule
 			return (objects, null);
 		}
 
-		private async Task<(long, IError? Error)> CreateVariablesTable(DbModule.Program db)
+		private async Task<(long, IError? Error)> CreateVariablesTable(DbModule.Program db, DataSource dataSource)
 		{
-			var dataSource = goalStep.GetVariable<DataSource>();
-			return await db.Execute(dataSource.NameInStep, @"CREATE TABLE __Variables__ (
+			return await db.Execute(dataSource, @"CREATE TABLE __Variables__ (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     variable TEXT NOT NULL UNIQUE,
     value TEXT,
@@ -142,19 +164,30 @@ namespace PLang.Modules.VariableModule
 		}
 
 		[Description("Set value to a variable then Store/Save variable(s) in a persistant storage. The storing of the variables must be defined by user.")]
-		public async Task<IError?> SetValueAndStore([HandlesVariable] Dictionary<string, object> variables)
+		public async Task<IError?> SetValueAndStore([HandlesVariable] Dictionary<string, object> variables, string? dataSourceName = null)
 		{
+			var (dataSource, error) = await GetDataSource(dataSourceName);
+			if (error != null) return error;
+
 			List<string> vars = new();
 			foreach (var variable in variables)
 			{
 				memoryStack.Put(variable.Key, variable.Value);
 				vars.Add(variable.Key);
 			}
-			return await Store(vars);
+			return await Store(vars, dataSource!);
+		}
+		[Description("Store/Save variable(s) in a persistant storage")]
+		public async Task<IError?> Store([HandlesVariable] List<string> variables, string? dataSourceName = null)
+		{
+			var (dataSource, error) = await GetDataSource(dataSourceName);
+			if (error != null) return error;
+
+			return await Store(variables, dataSource!);
 		}
 
-		[Description("Store/Save variable(s) in a persistant storage")]
-		public async Task<IError?> Store([HandlesVariable] List<string> variables)
+
+		internal async Task<IError?> Store([HandlesVariable] List<string> variables, DataSource dataSource)
 		{
 			var db = programFactory.GetProgram<DbModule.Program>(goalStep);
 			var datasource = goalStep.GetVariable<DataSource>();
@@ -170,25 +203,28 @@ namespace PLang.Modules.VariableModule
 
 			foreach (var variable in variables)
 			{
-				var value = variableHelper.LoadVariables(variable);
+				var value = memoryStack.LoadVariables(variable);
 				if (value == null) continue;
 
 				List<ParameterInfo> parameters = new();
 				parameters.Add(new ParameterInfo("System.String", "variable", variable));
 				parameters.Add(new ParameterInfo("System.String", "value", JsonConvert.SerializeObject(value)));
 
-				var result = await db.Select(datasource.NameInStep, "INSERT INTO __Variables__ (variable, value) VALUES (@variable, @value) ON CONFLICT(variable) DO UPDATE SET value = excluded.value;", parameters);
-				if (result.Error != null)
+				var (rowsAffected, error) = await db.Insert(datasource, "INSERT INTO __Variables__ (variable, value) VALUES (@variable, @value) ON CONFLICT(variable) DO UPDATE SET value = excluded.value;", parameters);
+				
+				if (error != null)
 				{
-					if (result.Error.Message.Contains("no such table"))
+					if (error.Message.Contains("no such table"))
 					{
-						var createTableResult = await CreateVariablesTable(db);
+						var createTableResult = await CreateVariablesTable(db, dataSource);
 						if (createTableResult.Error != null) return createTableResult.Error;
 
-						return await Store(variables);
+						return await Store(variables, datasource);
 					}
-					return result.Error;
+					return error;
 				}
+
+				if (rowsAffected == 0) return new ProgramError($"Variable was not updated. It should always be updated. Something is wrong. {ErrorReporting.CreateIssueShouldNotHappen}", goalStep);
 			}
 			return null;
 		}
@@ -202,7 +238,7 @@ namespace PLang.Modules.VariableModule
 			var propertyVars = variables.Where(p => p.Key.StartsWith("!"));
 			foreach (var property in propertyVars)
 			{
-				var value = variableHelper.LoadVariables(property.Value);
+				var value = memoryStack.LoadVariables(property.Value);
 				if (value != null)
 				{
 					var ov = new ObjectValue(property.Key, value, value.GetType());
@@ -226,7 +262,7 @@ namespace PLang.Modules.VariableModule
 				}
 				else
 				{
-					var value = variableHelper.LoadVariables(variable.Value);
+					var value = memoryStack.LoadVariables(variable.Value);
 					if (value != null)
 					{
 						returnValues.Add(new ObjectValue(variable.Key, value, properties: properties));
@@ -278,7 +314,7 @@ namespace PLang.Modules.VariableModule
 			var content = memoryStack.Get(key);
 			if (content == null) return null;
 
-			return variableHelper.LoadVariables(content);
+			return memoryStack.LoadVariables(content);
 		}
 		[Description(@"Set string variable. Developer might use single/double quote to indicate the string value, the wrapped quote should not be included in the value. If value is json, make sure to format it as valid json, use double quote("") by escaping it")]
 		public async Task SetStringVariable([HandlesVariable] string key, [HandlesVariable] string? value = null, bool urlDecode = false, bool htmlDecode = false, bool doNotLoadVariablesInValue = false, [HandlesVariable] string? defaultValue = null)
@@ -288,7 +324,7 @@ namespace PLang.Modules.VariableModule
 			if (urlDecode) value = HttpUtility.UrlDecode(value);
 			if (htmlDecode) value = HttpUtility.HtmlDecode(value);
 
-			object? content = (doNotLoadVariablesInValue) ? value : variableHelper.LoadVariables(value);
+			object? content = (doNotLoadVariablesInValue) ? value : memoryStack.LoadVariables(value);
 			memoryStack.Put(key, content, goalStep: goalStep);
 		}
 
@@ -297,7 +333,7 @@ namespace PLang.Modules.VariableModule
 		{
 			if (value == null) value = defaultValue;
 
-			object? content = (doNotLoadVariablesInValue) ? value : variableHelper.LoadVariables(value);
+			object? content = (doNotLoadVariablesInValue) ? value : memoryStack.LoadVariables(value);
 			if (content == null)
 			{
 				memoryStack.Put(key, content, goalStep: goalStep);
@@ -416,12 +452,12 @@ namespace PLang.Modules.VariableModule
 		}
 
 		[Description(@"Set variable. Developer might use single/double quote to indicate the string value. If value is json, make sure to format it as valid json, use double quote("") by escaping it")]
-		public async Task SetVariable([HandlesVariable] string key, [HandlesVariable] object? value = null, bool doNotLoadVariablesInValue = false, bool keyIsDynamic = false, object? onlyIfValueIsNot = null, [HandlesVariable] object? defaultValue = null)
+		public async Task SetVariable([HandlesVariable] string key, [HandlesVariable] object? value = null, bool doNotLoadVariablesInValue = false, bool keyIsDynamic = false, object? onlyIfValueIsNot = null, [HandlesVariable] object? defaultValue = null, string? FullTypeName = null)
 		{
 			Stopwatch stopwatch = Stopwatch.StartNew();
 			logger.LogDebug($"         - Start SetVariable (key:{key} | value:{value}) - {stopwatch.ElapsedMilliseconds}");
 			if (value == null) value = defaultValue;
-			object? content = (doNotLoadVariablesInValue) ? value : variableHelper.LoadVariables(value, true, defaultValue);
+			object? content = (doNotLoadVariablesInValue) ? value : memoryStack.LoadVariables(value, true, defaultValue);
 			logger.LogDebug($"         - loaded variable - {stopwatch.ElapsedMilliseconds}");
 			if (onlyIfValueIsNot?.ToString() == "null" && value == null) return;
 			if (onlyIfValueIsNot?.ToString() == "empty" && (value == null || VariableHelper.IsEmpty(value))) return;
@@ -429,12 +465,18 @@ namespace PLang.Modules.VariableModule
 
 			if (key.Contains("%") && keyIsDynamic)
 			{
-				var newKey = variableHelper.LoadVariables(key);
+				var newKey = memoryStack.LoadVariables(key);
 				if (!string.IsNullOrWhiteSpace(newKey?.ToString()))
 				{
 					key = newKey.ToString();
 				}
 			}
+
+			if (FullTypeName != null && FullTypeName != "System.Object")
+			{
+				content = TypeHelper.ConvertToType(content, Type.GetType(FullTypeName));
+			}
+
 			logger.LogDebug($"         - loaded % - {stopwatch.ElapsedMilliseconds}");
 			memoryStack.Put(key, content, goalStep: goalStep);
 			logger.LogDebug($"         - Done put into memorystack - {stopwatch.ElapsedMilliseconds}");
@@ -462,7 +504,11 @@ namespace PLang.Modules.VariableModule
 
 
 
-		[Description(@"Set default value on variables if not set, good for setting value if variable is empty. Number can be represented with _, e.g. 100_000. If value is json, make sure to format it as valid json, use double quote("") by escaping it.  onlyIfValueIsSet can be define by user, null|""null""|""empty"" or value a user defines. Be carefull, there is difference between null and ""null"", to be ""null"" is must be defined by user.")]
+		[Description(@"Set default value on variables if not set, good for setting value if variable is empty. Number can be represented with _, e.g. 100_000. If value is json, make sure to format it as valid json, use double quote("") by escaping it.  onlyIfValueIsSet can be define by user, null|""null""|""empty"" or value a user defines. Be carefull, there is difference between null and ""null"", to be ""null"" is must be defined by user.
+Example:
+`set default value %name% = %request.body.name%, %zip% = %request.body.zip%` => [{key=%name%, value=%request.body.zip%}, {key=%zip%, value=%request.body.zip%}]
+`set default value %target% = ""#body"" => {key=%target%, value=""#body""}
+")]
 		public async Task SetDefaultValueOnVariables([HandlesVariableAttribute] Dictionary<string, object?> keyValues, bool doNotLoadVariablesInValue = false, bool keyIsDynamic = false, object? onlyIfValueIsNot = null)
 		{
 			foreach (var key in keyValues)
@@ -491,15 +537,29 @@ namespace PLang.Modules.VariableModule
 
 		
 
-		[Description(@"Set value on variables or a default value is value is empty. Number can be represented with _, e.g. 100_000. If value is json, make sure to format it as valid json, use double quote("") by escaping it.  onlyIfValueIsSet can be define by user, null|""null""|""empty"" or value a user defines. Be carefull, there is difference between null and ""null"", to be ""null"" is must be defined by user.")]
-		public async Task SetValueOnVariablesOrDefaultIfValueIsEmpty([HandlesVariableAttribute] Dictionary<string, Tuple<object?, object?>> keyValues, bool doNotLoadVariablesInValue = false, bool keyIsDynamic = false, object? onlyIfValueIsNot = null)
-		{
-			foreach (var key in keyValues)
-			{
-				var objectValue = memoryStack.GetObjectValue(key.Key, false);
-				object? value = !VariableHelper.IsEmpty(key.Value.Item1) ? key.Value.Item1 : key.Value.Item2;
+		[Description("Type should be c# object type, e.g. System.String, System.DateTime, etc. When undefined, set to System.Object")]
+		public record VariableIfEmpty(string Name, object FirstValue, object ValueIfFirstIsEmpty, string Type);
 
-				await SetVariable(key.Key, value, doNotLoadVariablesInValue, keyIsDynamic, onlyIfValueIsNot);
+		[Description(@"Set value on variables or a default value is value is empty. Number can be represented with _, e.g. 100_000. If value is json, make sure to format it as valid json, use double quote("") by escaping it.  onlyIfValueIsSet can be define by user, null|""null""|""empty"" or value a user defines. Be carefull, there is difference between null and ""null"", to be ""null"" is must be defined by user.")]
+		public async Task SetValueOnVariablesOrDefaultIfValueIsEmpty([HandlesVariableAttribute] List<VariableIfEmpty> variables, bool doNotLoadVariablesInValue = false, bool keyIsDynamic = false, object? onlyIfValueIsNot = null)
+		{
+			foreach (var variable in variables)
+			{
+				
+
+
+				var value = (variable.FirstValue is string str && str.Contains("%")) ? memoryStack.Get(str) : variable.FirstValue;
+				var value2 = (variable.ValueIfFirstIsEmpty is string str2 && str2.Contains("%")) ? memoryStack.Get(str2) : variable.ValueIfFirstIsEmpty;
+
+				var objectValue = memoryStack.GetObjectValue(variable.Name, false);
+				object? val = !VariableHelper.IsEmpty(value) ? value : value2;
+
+				if (variable.Type != "System.Object")
+				{
+					val = TypeHelper.ConvertToType(val, Type.GetType(variable.Type));
+				}
+
+				await SetVariable(variable.Name, val, doNotLoadVariablesInValue, keyIsDynamic, onlyIfValueIsNot);
 			}
 		}
 
@@ -509,13 +569,23 @@ namespace PLang.Modules.VariableModule
 		{
 			if (value == null) return value;
 
-			value = (doNotLoadVariablesInValue) ? value : variableHelper.LoadVariables(value);
+			value = (doNotLoadVariablesInValue) ? value : memoryStack.LoadVariables(value);
 
 			object? val = memoryStack.Get(key);
 			if (val != null && val is string && (value is JObject || value is JProperty || value is JValue))
 			{
 				value = value.ToString();
 			}
+
+			if (val is string str && str.TrimStart().StartsWith("[") && str.TrimEnd().EndsWith("]"))
+			{
+				try
+				{
+					val = JArray.Parse(str.Trim());
+				}
+				catch { }
+			}
+
 
 			if ((val == null || val is string) && value is string)
 			{
@@ -524,13 +594,19 @@ namespace PLang.Modules.VariableModule
 				string appendingValue = (seperatorLocation == "start") ? seperator.ToString() + value.ToString() : value.ToString() + seperator.ToString();
 				val = (valueLocation == "postfix") ? val + appendingValue : appendingValue + val;
 			}
+			else if (val is JArray jArray)
+			{
+				jArray.Add(value);
+
+				val = jArray;
+			}
 			else if (val is System.Collections.IList list)
 			{
 				if (!shouldBeUnique || (shouldBeUnique && !list.Contains(val)))
 				{
 					list.Add(value);
 				}
-			}
+			}			
 			else
 			{
 				val = new List<object>();

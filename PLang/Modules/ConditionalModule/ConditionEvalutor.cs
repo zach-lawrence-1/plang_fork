@@ -1,4 +1,6 @@
 ﻿using NBitcoin.Secp256k1;
+using Newtonsoft.Json.Linq;
+using PLang.Runtime;
 using PLang.Utils;
 using System;
 using System.Collections;
@@ -14,9 +16,13 @@ namespace PLang.Modules.ConditionalModule
 	public static class ConditionEvaluator
 	{
 		public enum ConditionKind { Simple, Compound }
-		[Description("operators: ==|!=|<|>|<=|>=|in|contains|does not contain|startswith|endswith|indexOf")]
+		[Description(@"
+For CompundCondition, use Conditions list to construct the condition. LeftValue and RightValue are used only at in SimpleCondition
+Operator: ==|!=|<|>|<=|>=|in|isEmpty|contains|startswith|endswith|indexOf
+
+")]
 		public record CompoundCondition : Condition;
-		[Description("Operator: ==|!=|<|>|<=|>=|in|contains|does not contain|startswith|endswith|indexOf")]
+		[Description("Operator: ==|!=|<|>|<=|>=|in|isEmpty|contains|does not contain|startswith|endswith|indexOf")]
 		public record SimpleCondition : Condition;
 		public record Condition
 		{
@@ -60,6 +66,7 @@ namespace PLang.Modules.ConditionalModule
 				">=" => Cmp(n) >= 0,
 				"<=" => Cmp(n) <= 0,
 				"in" => n.RightValue is IEnumerable r && r.Cast<object>().Contains(n.LeftValue),
+				"isEmpty" => IsEmpty(n.LeftValue, n.RightValue),
 				"contains" => Has(n.LeftValue, n.RightValue),
 				"does not contain" => !Has(n.LeftValue, n.RightValue),
 				"startsWith" => Str(n, (s, x) => s.StartsWith(x, StringComparison.Ordinal)),
@@ -68,14 +75,39 @@ namespace PLang.Modules.ConditionalModule
 				_ => throw new NotSupportedException($"Op '{n.Operator}'")
 			};
 
+			private static bool IsEmpty(object? leftValue, object? rightValue)
+			{
+				object? value = leftValue;
+				if (value == null) value = rightValue;
+
+				if (value != null)
+				{
+					if (value is ObjectValue ovLeft) return ovLeft.IsEmpty;
+					if (value == null) return true;
+					if (value is string str) return string.IsNullOrWhiteSpace(str);
+					if (value is IList list) return list.Count == 0;
+					if (value is IDictionary dict) return dict.Count == 0;
+				}
+
+				return true;
+			}
+
 			public static bool EvaluateCompound(Condition n) => n.Logic!.ToUpperInvariant() switch
 			{
-				"&&" => n.Conditions!.All(Evaluate),
-				"AND" => n.Conditions!.All(Evaluate),
-				"OR" => n.Conditions!.Any(Evaluate),
-				"||" => n.Conditions!.Any(Evaluate),
+				"&&" or "AND" => EvaluateAll(n.Conditions!),
+				"OR" or "||" => n.Conditions!.Any(Evaluate),
 				_ => throw new NotSupportedException($"Logic '{n.Logic}'")
 			};
+
+			private static bool EvaluateAll(IEnumerable<Condition> conditions)
+			{
+				foreach (var condition in conditions)
+				{
+					if (!Evaluate(condition))
+						return false;
+				}
+				return true;
+			}
 
 			/* helpers */
 			static int? Cmp(Condition n)

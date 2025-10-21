@@ -24,14 +24,12 @@ namespace PLang.Utils
 	{
 		private readonly ISettings settings;
 		private readonly ILogger logger;
-		private readonly MemoryStack memoryStack;
 		private JsonSerializerOptions jsonSerializerOptions;
 		private JsonSerializerSettings jsonSerializerSettings;
-		public VariableHelper(MemoryStack memoryStack, ISettings settings, ILogger logger)
+		public VariableHelper(ISettings settings, ILogger logger)
 		{
 			this.settings = settings;
 			this.logger = logger;
-			this.memoryStack = memoryStack;
 
 			jsonSerializerOptions = new JsonSerializerOptions
 			{
@@ -64,20 +62,20 @@ namespace PLang.Utils
 			return false;
 		}
 
-		public Dictionary<string, object?> LoadVariables(Dictionary<string, object?>? items, bool emptyIfNotFound = true)
+		public Dictionary<string, object?> LoadVariables(MemoryStack memoryStack, Dictionary<string, object?>? items, bool emptyIfNotFound = true)
 		{
 			if (items == null) return new Dictionary<string, object?>();
 
 			foreach (var item in items)
 			{
-				items[item.Key] = LoadVariables(item.Value, emptyIfNotFound);
+				items[item.Key] = LoadVariables(memoryStack, item.Value, emptyIfNotFound);
 			}
 			return items;
 		}
 
 
 
-		public object? LoadVariables(object? obj, bool emptyIfNotFound = true, object? defaultValue = null)
+		public object? LoadVariables(MemoryStack memoryStack, object? obj, bool emptyIfNotFound = true, object? defaultValue = null)
 		{
 			if (obj == null) return null;
 			if (obj.GetType().IsPrimitive) return obj;
@@ -92,7 +90,7 @@ namespace PLang.Utils
 					logger.LogDebug($"           - Loading {variableName} - {stopwatch.ElapsedMilliseconds}");
 					if (variableName.StartsWith("%Settings."))
 					{
-						var vars = GetVariables(variableName, emptyIfNotFound);
+						var vars = GetVariables(variableName, memoryStack, emptyIfNotFound);
 						if (vars.Count == 0) return null;
 						return vars[0].Value;
 					}
@@ -109,12 +107,12 @@ namespace PLang.Utils
 			string? content = obj.ToString();
 			if (content == null) return null;
 
-			var variables = GetVariables(content, emptyIfNotFound);
+			var variables = GetVariables(content, memoryStack, emptyIfNotFound);
 			if (variables.Count == 0) return obj;
 
 			if (TypeHelper.IsRecordType(obj))
 			{
-				return LoadVariablesToRecord(obj, variables, defaultValue);
+				return LoadVariablesToRecord(obj, variables, defaultValue, memoryStack);
 			}
 
 			if (obj.ToString().Contains("[*]"))
@@ -123,7 +121,7 @@ namespace PLang.Utils
 			}
 			if (obj is JObject jobject)
 			{
-				return LoadVariablesToJObject(jobject, variables, defaultValue);
+				return LoadVariablesToJObject(jobject, variables, defaultValue, memoryStack);
 			}
 
 			if (obj is JArray array)
@@ -170,16 +168,18 @@ namespace PLang.Utils
 			return array;
 		}
 
-		private object? LoadVariablesToJObject(JObject incomingJObject, List<ObjectValue> variables, object? defaultValue)
+		private object? LoadVariablesToJObject(JObject incomingJObject, List<ObjectValue> variables, object? defaultValue, MemoryStack memoryStack)
 		{
 			var jobject = incomingJObject.DeepClone() as JObject;
-
-			foreach (var variable in variables)
+			int refillJObjectCounter = 0;
+			for (int c=0;c<variables.Count;c++)
 			{
+				var variable = variables[c];
+
 				var jsonProperty = FindPropertyNameByValue(jobject, variable.PathAsVariable);
 				if (jsonProperty == null)
 				{
-					LoadVariableInTextValue(jobject, variable, defaultValue);
+					LoadVariableInTextValue(jobject, variable, memoryStack, defaultValue);
 					continue;
 				}
 
@@ -253,11 +253,25 @@ namespace PLang.Utils
 					}
 				}
 
+				// when jobject contains variable multiple time, then repeat the search
+				// on the same variable, so do c--, this is not ideal implementation
+				if (jobject.ToString().Contains(variable.PathAsVariable))
+				{
+					refillJObjectCounter++;
+					if (refillJObjectCounter < 20)
+					{
+						c--;
+					} else
+					{
+						throw new Exception($"Could not fill jobject for {variable.PathAsVariable}. Object is: {jobject.ToString()}");
+					}
+				}
+
 			}
 			return jobject;
 		}
 
-		private object? LoadVariablesToRecord(object obj, List<ObjectValue> variables, object? defaultValue)
+		private object? LoadVariablesToRecord(object obj, List<ObjectValue> variables, object? defaultValue, MemoryStack memoryStack)
 		{
 			var type = obj.GetType();
 			var props = type.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
@@ -278,7 +292,7 @@ namespace PLang.Utils
 					if (IsVariable(str))
 					{
 						var variable = variables.FirstOrDefault(p => p.PathAsVariable.Equals(str, StringComparison.OrdinalIgnoreCase));
-						var valueToSet = (variable != null) ? variable.Value : LoadVariables(str);
+						var valueToSet = (variable != null) ? variable.Value : memoryStack.LoadVariables(str);
 						if (convertValueTo != null)
 						{
 							values[i] = TypeHelper.ConvertToType(valueToSet, convertValueTo);
@@ -290,7 +304,7 @@ namespace PLang.Utils
 					}
 					else if (str.Contains("%"))
 					{
-						var varValue = LoadVariables(str);
+						var varValue = memoryStack.LoadVariables(str);
 						values[i] = varValue;
 					}
 					else
@@ -308,7 +322,7 @@ namespace PLang.Utils
 			return ctor.Invoke(values);
 		}
 
-		private void LoadVariableInTextValue(JToken jobject, ObjectValue variable, object? defaultValue = null)
+		private void LoadVariableInTextValue(JToken jobject, ObjectValue variable, MemoryStack memoryStack, object? defaultValue = null)
 		{
 			var children = jobject.Children();
 			for (int b=0;b< children.Count();b++)
@@ -317,7 +331,7 @@ namespace PLang.Utils
 			
 				if (child is JValue jValue)
 				{
-					var obj = LoadVariables(jValue.Value);
+					var obj = memoryStack.LoadVariables(jValue.Value);
 					if (obj != null)
 					{
 						try
@@ -351,7 +365,7 @@ namespace PLang.Utils
 				}
 				else
 				{
-					LoadVariableInTextValue(child, variable);
+					LoadVariableInTextValue(child, variable, memoryStack: memoryStack);
 				}
 				int i = 0;
 			}
@@ -648,7 +662,7 @@ namespace PLang.Utils
 		}
 
 
-		internal List<ObjectValue> GetVariables(string content, bool emptyIfNotFound = true)
+		internal List<ObjectValue> GetVariables(string content, MemoryStack memoryStack, bool emptyIfNotFound = true)
 		{
 			List<ObjectValue> variables = new List<ObjectValue>();
 
@@ -708,16 +722,6 @@ namespace PLang.Utils
 			return variableName.StartsWith("Settings.") || variableName.StartsWith("%Settings.");
 		}
 
-		public ObjectValue? GetObjectValue(string? variableName, Goal goal)
-		{
-			if (variableName == null) return null;
-			if (IsSetting(variableName))
-			{
-				return GetSettingObjectValue(variableName);
-			}
-			memoryStack.Goal = goal;
-			return memoryStack.GetObjectValue(variableName);
-		}
 		public List<ObjectValue> GetSettingObjectsValue(string variableName)
 		{
 			string[] variableNames = [variableName];
@@ -767,14 +771,14 @@ namespace PLang.Utils
 			return (list.Count > 0) ? list[0] : null;
 
 		}
-
+		/*
 		public object? GetValue(string? variableName, Type parameterType)
 		{
 			if (!IsVariable(variableName)) { return variableName; }
 
 			var objectValue = memoryStack.Get(variableName!, parameterType);
 			return objectValue;
-		}
+		}*/
 
 
 		public static string Clean(string str)

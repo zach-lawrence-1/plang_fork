@@ -2,10 +2,12 @@
 using PLang.Errors.AskUser;
 using PLang.Interfaces;
 using PLang.Services.OutputStream;
+using PLang.Services.OutputStream.Messages;
 using static PLang.Modules.OutputModule.Program;
 
 namespace PLang.Errors.Handlers
 {
+	/*
     public class AskUserHandler : IAskUserHandler
     {
         private readonly IOutputSystemStreamFactory outputStreamFactory;
@@ -18,13 +20,13 @@ namespace PLang.Errors.Handlers
 
         public async Task<(bool, IError?)> Handle(AskUser.AskUserError error)
         {
-			var askOptions = new AskOptions(error.Message);
+			var askOptions = new AskMessage(error.Message);
 
-            (var result, var askError) = await outputStreamFactory.CreateHandler().Ask(error.Step, askOptions);
+            (var result, var askError) = await outputStreamFactory.CreateHandler().AskAsync(askOptions);
 			if (askError != null) return (false, askError);
 
             return await error.InvokeCallback([result]);
 
         }
-    }
+    }*/
 }

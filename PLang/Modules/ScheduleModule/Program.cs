@@ -14,6 +14,7 @@ using PLang.Interfaces;
 using PLang.Models;
 using PLang.Runtime;
 using PLang.Services.OutputStream;
+using PLang.Services.OutputStream.Sinks;
 using PLang.Services.SettingsService;
 using PLang.Utils;
 using System.ComponentModel;
@@ -25,16 +26,12 @@ namespace PLang.Modules.ScheduleModule
 	[Description("Wait, Sleep and time delay. Cron scheduler")]
 	public class Program : BaseProgram
 	{
-		private readonly ISettings settings;
-		private readonly IEngine engine;
 		private readonly IPseudoRuntime pseudoRuntime;
-		private readonly ILogger logger;
-		private readonly IPLangFileSystem fileSystem;
-		private readonly IOutputStreamFactory outputStreamFactory;
 		private readonly ModuleSettings moduleSettings;
 		public PrParser PrParser { get; }
 
-		public Program(ISettings settings, PrParser prParser, IEngine engine, IPseudoRuntime pseudoRuntime, ILogger logger, IPLangFileSystem fileSystem, IOutputStreamFactory outputStreamFactory) : base()
+		public Program(ISettings settings, PrParser prParser, IEngine engine, IPseudoRuntime pseudoRuntime,
+			ILogger logger, IPLangFileSystem fileSystem, IAppCache appCache) : base()
 		{
 			this.settings = settings;
 			PrParser = prParser;
@@ -42,7 +39,7 @@ namespace PLang.Modules.ScheduleModule
 			this.pseudoRuntime = pseudoRuntime;
 			this.logger = logger;
 			this.fileSystem = fileSystem;
-			this.outputStreamFactory = outputStreamFactory;
+			this.appCache = appCache;
 			this.moduleSettings = new ModuleSettings(settings);
 
 		}
@@ -54,6 +51,42 @@ namespace PLang.Modules.ScheduleModule
 			//make sure we always wait for execution
 			goalStep.WaitForExecution = true;
 			await Task.Delay(sleepTimeInMilliseconds);
+		}
+
+		public record WaitIncreasignlyCounter(string Key, int Counter);
+		[Description("Waits increasingly in a key")]
+		[MethodSettings(CanBeAsync = false)]
+		public async Task<IError?> WaitIncreasingly(string key, List<int> millisecondsDelay, int timeoutInSeconds = 5 * 60)
+		{
+			if (string.IsNullOrEmpty(key)) return new ProgramError("Key cannot be empty");
+
+			string cacheKey = "WaitIncreasingly_" + key;
+			var request = (await appCache.Get(cacheKey)) as WaitIncreasignlyCounter;
+			if (request == null) request = new WaitIncreasignlyCounter(key, 0);
+
+			int waitFor = 0;
+			if (millisecondsDelay.Count <= request.Counter)
+			{
+				waitFor = millisecondsDelay.LastOrDefault();
+			}
+			else
+			{
+				waitFor = millisecondsDelay[request.Counter];
+			}
+			request = request with { Counter = request.Counter + 1 };
+
+			await appCache.Set(cacheKey, request, TimeSpan.FromSeconds(timeoutInSeconds));
+
+			//make sure we always wait for execution
+			goalStep.WaitForExecution = true;
+
+			if (waitFor == 0) return null;
+
+			logger.LogWarning($"Waiting {waitFor} (counter:{request.Counter}) because of key:{key} - ");
+			await Task.Delay(waitFor);
+
+
+			return null;
 		}
 
 		public async Task<IError?> WaitOnVariable([HandlesVariable] string variableName, GoalToCallInfo goalToCall, long timeInMilliseconds = 1000)
@@ -76,10 +109,10 @@ namespace PLang.Modules.ScheduleModule
 
 				await Task.Delay(100);
 			}
-			
-			var result = await pseudoRuntime.RunGoal(engine, context, fileSystem.RelativeAppPath, goalToCall);
 
-			return result.error;
+			var result = await pseudoRuntime.RunGoal(engine, contextAccessor, fileSystem.RelativeAppPath, goalToCall);
+
+			return result.Error;
 		}
 
 		public record CronJob(string AbsolutePrFilePath, string CronCommand, GoalToCallInfo GoalName, DateTime? NextRun = null, int MaxExecutionTimeInMilliseconds = 30000)
@@ -109,7 +142,6 @@ namespace PLang.Modules.ScheduleModule
 
 			settings.SetList(typeof(ModuleSettings), cronJobs);
 
-			KeepAlive(this, "Scheduler");
 		}
 
 		public async Task StartScheduler()
@@ -123,31 +155,38 @@ namespace PLang.Modules.ScheduleModule
 			IPseudoRuntime pseudoRuntime = this.pseudoRuntime;
 			IPLangFileSystem fileSystem = this.fileSystem;
 
-			if (outputStreamFactory.CreateHandler() is not UIOutputStream)
+			if (context.SystemSink is not AppOutputSink)
 			{
 				logger.LogDebug("Initiate new engine for scheduler");
-				using (var containerForScheduler = new ServiceContainer())
-				{
-					containerForScheduler.RegisterForPLangConsole(fileSystem.GoalsPath, fileSystem.Path.DirectorySeparatorChar.ToString());
+				var containerForScheduler = new ServiceContainer();
 
-					engine = containerForScheduler.GetInstance<IEngine>();
-					engine.Init(containerForScheduler);
-					settings = containerForScheduler.GetInstance<ISettings>();
-					prParser = containerForScheduler.GetInstance<PrParser>();
-					logger = containerForScheduler.GetInstance<ILogger>();
-					pseudoRuntime = containerForScheduler.GetInstance<IPseudoRuntime>();
-					fileSystem = containerForScheduler.GetInstance<IPLangFileSystem>();
 
-					Start(settings, engine, prParser, logger, pseudoRuntime, fileSystem);
-				}
+				containerForScheduler.RegisterForPLang(fileSystem.GoalsPath, fileSystem.Path.DirectorySeparatorChar.ToString(), null, null, parentEngine: engine);
+
+				engine = containerForScheduler.GetInstance<IEngine>();
+				engine.Init(containerForScheduler);
+				settings = containerForScheduler.GetInstance<ISettings>();
+				prParser = containerForScheduler.GetInstance<PrParser>();
+				logger = containerForScheduler.GetInstance<ILogger>();
+				pseudoRuntime = containerForScheduler.GetInstance<IPseudoRuntime>();
+				fileSystem = containerForScheduler.GetInstance<IPLangFileSystem>();
+				engine.Name = "Scheduler";
+				Start(settings, engine, prParser, logger, pseudoRuntime, fileSystem);
+
+
+				KeepAlive(containerForScheduler, "Scheduler");
+
 			}
 			else
 			{
 
 
 				Start(settings, engine, prParser, logger, pseudoRuntime, fileSystem);
+
+
+				KeepAlive(engine, "Scheduler");
 			}
-			
+
 		}
 
 
@@ -193,8 +232,8 @@ namespace PLang.Modules.ScheduleModule
 
 				while (true)
 				{
-					
-					await RunScheduledTasks(settings, engine, prParser, logger, pseudoRuntime, fileSystem, outputStreamFactory);
+
+					await RunScheduledTasks(settings, engine, prParser, logger, pseudoRuntime, fileSystem);
 
 					//run every 1 min
 					await Task.Delay(60 * 1000);
@@ -205,6 +244,7 @@ namespace PLang.Modules.ScheduleModule
 
 		private List<CronJob> CleanDeletedCronJobs(ISettings settings, IPLangFileSystem fileSystem, List<CronJob> cronJobs)
 		{
+			int counter = 0;
 			for (int i = 0; i < cronJobs.Count; i++)
 			{
 				CronJob cronJob = cronJobs[i];
@@ -212,6 +252,11 @@ namespace PLang.Modules.ScheduleModule
 				{
 					cronJobs.RemoveAt(i);
 					i--;
+					counter++;
+					if (counter > 100)
+					{
+						Console.WriteLine("!!! LOOP CleanDeletedCronJobs");
+					}
 				}
 			}
 
@@ -220,7 +265,7 @@ namespace PLang.Modules.ScheduleModule
 		}
 
 
-		private async Task RunScheduledTasks(ISettings settings, IEngine engine, PrParser prParser, ILogger logger, IPseudoRuntime pseudoRuntime, IPLangFileSystem fileSystem, IOutputStreamFactory outputStreamFactory)
+		private async Task RunScheduledTasks(ISettings settings, IEngine engine, PrParser prParser, ILogger logger, IPseudoRuntime pseudoRuntime, IPLangFileSystem fileSystem)
 		{
 			logger.LogDebug("Running 1 min cron check");
 			CronJob? item = null;
@@ -231,8 +276,8 @@ namespace PLang.Modules.ScheduleModule
 				for (int i = 0; i < list.Count; i++)
 				{
 					item = list[i];
-					
-					var p = new Program(settings, prParser, engine, pseudoRuntime, logger, fileSystem, outputStreamFactory);
+
+					var p = new Program(settings, prParser, engine, pseudoRuntime, logger, fileSystem, appCache);
 					var schedule = CrontabSchedule.Parse(item.CronCommand);
 
 					var nextOccurrence = schedule.GetNextOccurrence(SystemTime.OffsetUtcNow().DateTime);
@@ -246,18 +291,18 @@ namespace PLang.Modules.ScheduleModule
 						continue;
 					}
 
-					logger.LogDebug($"Running cron - GoalName:{item.GoalName}");
+					logger.LogInformation($"Running cron - GoalName:{item.GoalName}");
 
 					using (CancellationTokenSource cts = new CancellationTokenSource())
 					{
-						engine.GetMemoryStack().Clear();
+						context.MemoryStack.Clear();
 
 						int maxExecutionTime = (item.MaxExecutionTimeInMilliseconds == 0) ? 30000 : item.MaxExecutionTimeInMilliseconds;
 						cts.CancelAfter(maxExecutionTime);
-						var result = await pseudoRuntime.RunGoal(engine, engine.GetContext(), fileSystem.RelativeAppPath, item.GoalName);
-						if (result.error != null)
+						var result = await pseudoRuntime.RunGoal(engine, contextAccessor, fileSystem.RelativeAppPath, item.GoalName, goal);
+						if (result.Error != null)
 						{
-							logger.LogError(result.error.ToString());
+							logger.LogError(result.Error.ToString());
 						}
 					}
 

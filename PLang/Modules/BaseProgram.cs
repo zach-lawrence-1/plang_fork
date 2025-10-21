@@ -24,7 +24,9 @@ using PLang.Runtime;
 using PLang.SafeFileSystem;
 using PLang.Services.LlmService;
 using PLang.Services.OutputStream;
+using PLang.Services.OutputStream.Sinks;
 using PLang.Utils;
+using System;
 using System.Diagnostics;
 using System.Net;
 using System.Reflection;
@@ -38,13 +40,13 @@ namespace PLang.Modules
 {
 	public abstract class BaseProgram
 	{
-		private HttpContext? _listenerContext = null;
 
 		protected MemoryStack memoryStack;
 		protected Goal goal;
 		protected GoalStep goalStep;
 		protected Instruction instruction;
-		protected PLangAppContext context;
+		protected PLangAppContext appContext;
+		protected PLangContext context;
 		protected VariableHelper variableHelper;
 		protected ITypeHelper typeHelper;
 		protected IGenericFunction function;
@@ -52,21 +54,19 @@ namespace PLang.Modules
 		protected ILogger logger;
 		protected IServiceContainer container;
 		protected IAppCache appCache;
-		protected IOutputStreamFactory outputStreamFactory;
 		protected IPLangFileSystem fileSystem;
 		protected MethodHelper methodHelper;
 		protected IFileAccessHandler fileAccessHandler;
 		protected ISettings settings;
 		protected IEngine engine;
+		protected IPLangContextAccessor contextAccessor;
 		protected bool IsBuilder { get; } = false;
 		protected bool IsDebugMode { get; } = false;
 		public HttpContext? HttpContext
 		{
 			get
 			{
-				if (_listenerContext == null && context.ContainsKey(ReservedKeywords.IsHttpRequest)) throw new NullReferenceException("_listenerContext is null. It should not be null");
-
-				return _listenerContext;
+				return context.HttpContext;
 			}
 		}
 		public Goal Goal { get { return goal; } }
@@ -81,33 +81,36 @@ namespace PLang.Modules
 			IsDebugMode = isDebugMode;
 		}
 
-		public void Init(IServiceContainer container, Goal goal, GoalStep step, Instruction instruction, HttpContext? httpContext)
+		public void Init(IServiceContainer container, Goal goal, GoalStep step, Instruction instruction, IPLangContextAccessor contextAccessor)
 		{
 			Stopwatch stopwatch = Stopwatch.StartNew();
 			this.container = container;
 
 			this.logger = container.GetInstance<ILogger>();
 			logger.LogDebug($"        - Init on BaseProgram - {stopwatch.ElapsedMilliseconds}");
-			this.memoryStack = container.GetInstance<MemoryStack>();
-			this.context = container.GetInstance<PLangAppContext>();
+
+			
+			this.appContext = container.GetInstance<PLangAppContext>();			
 			this.appCache = container.GetInstance<IAppCache>();
-			this.outputStreamFactory = container.GetInstance<IOutputStreamFactory>();
 			this.fileSystem = container.GetInstance<IPLangFileSystem>();
-			this.settings = container.GetInstance<ISettings>();
-			_listenerContext = httpContext;
+			this.settings = container.GetInstance<ISettings>();			
 			this.engine = container.GetInstance<IEngine>();
 
+			this.contextAccessor = contextAccessor;
+			this.context = contextAccessor.Current;
+			this.memoryStack = context.MemoryStack;
 			this.goal = goal;
 			this.goalStep = step;
 			this.instruction = instruction;
 			this.memoryStack.Goal = goal;
+
 			logger.LogDebug($"        - Set vars - {stopwatch.ElapsedMilliseconds}");
-			variableHelper = container.GetInstance<VariableHelper>();
+			
 			this.typeHelper = container.GetInstance<ITypeHelper>();
 			this.llmServiceFactory = container.GetInstance<ILlmServiceFactory>();
-			methodHelper = container.GetInstance<MethodHelper>();
+			this.methodHelper = container.GetInstance<MethodHelper>();
 
-			fileAccessHandler = container.GetInstance<IFileAccessHandler>();
+			this.fileAccessHandler = container.GetInstance<IFileAccessHandler>();
 			logger.LogDebug($"        - Done init - {stopwatch.ElapsedMilliseconds}");
 		}
 
@@ -173,7 +176,7 @@ namespace PLang.Modules
 				Task? task = null;
 				try
 				{
-					if (engine.Mocks.Count > 0)
+					if (context.Mocks.Count > 0)
 					{
 						task = RunMockIfMatch(goalStep, function, parameterValues);
 					}
@@ -236,7 +239,7 @@ namespace PLang.Modules
 					if (ex is MissingSettingsException mse)
 					{
 						var engine = ((ServiceContainer)container).GetInstance<IEngine>();
-						error = await MissingSettingsHelper.HandleMissingSetting(engine, mse);
+						error = await MissingSettingsHelper.HandleMissingSetting(engine, context, mse);
 						if (error != null) return (null, error);
 
 						return await RunFunction(function);
@@ -247,7 +250,7 @@ namespace PLang.Modules
 					if (this is IDisposable disposable)
 					{
 						//logger.LogDebug($"Calling Dispose for {this}");
-						//disposable.Dispose();
+						disposable.Dispose();
 					}
 					return (null, pe);
 				}
@@ -274,7 +277,7 @@ namespace PLang.Modules
 			{
 				if (ex is MissingSettingsException mse)
 				{
-					(var answer, var error) = await AskUser.GetAnswer(engine, mse.Message);
+					(var answer, var error) = await AskUser.GetAnswer(engine, context, mse.Message);
 					if (error != null) return (null, error);
 
 					error = await mse.InvokeCallback(answer);
@@ -282,6 +285,7 @@ namespace PLang.Modules
 
 					return await RunFunction(function);
 				}
+				
 				var pe = new ProgramError(ex.Message, goalStep, function, parameterValues, Key: ex.GetType().FullName ?? "ProgramError", 500, Exception: ex);
 
 				return (null, pe);
@@ -290,7 +294,7 @@ namespace PLang.Modules
 
 		private Task<(object?, IError?)>? RunMockIfMatch(GoalStep goalStep, IGenericFunction function, Dictionary<string, object?> parameterValues)
 		{
-			var mockMethods = engine.Mocks.Where(p => p.ModuleType == goalStep.ModuleType + ".Program" && p.MethodName == function.Name);
+			var mockMethods = context.Mocks.Where(p => p.ModuleType == goalStep.ModuleType + ".Program" && p.MethodName == function.Name);
 			if (!mockMethods.Any()) return null;
 
 			foreach (var mockMethod in mockMethods)
@@ -299,7 +303,7 @@ namespace PLang.Modules
 				if (mockMethod.Parameters.Count == 0)
 				{
 					mockMethod.GoalToCall.Parameters.AddOrReplace(parameterValues);
-					return engine.RunGoal(mockMethod.GoalToCall, goal);
+					return engine.RunGoal(mockMethod.GoalToCall, goal, context);
 				}
 				else
 				{
@@ -323,7 +327,7 @@ namespace PLang.Modules
 					if (isMatch)
 					{
 						mockMethod.GoalToCall.Parameters.AddOrReplace(parameterValues);
-						return engine.RunGoal(mockMethod.GoalToCall, goal);
+						return engine.RunGoal(mockMethod.GoalToCall, goal, context);
 					}
 
 				}
@@ -374,7 +378,7 @@ namespace PLang.Modules
 
 		private async Task<(bool, IError?)> HandleAskUser(AskUserError aue)
 		{
-			var (answer, error) = await AskUser.GetAnswer(engine, aue.Message);
+			var (answer, error) = await AskUser.GetAnswer(engine, context, aue.Message);
 			if (error != null) return (false, error);
 
 			(var isHandled, error) = await aue.InvokeCallback([answer]);
@@ -390,7 +394,7 @@ namespace PLang.Modules
 			var fileAccessHandler = container.GetInstance<IFileAccessHandler>();
 			var engine = container.GetInstance<IEngine>();
 
-			(var answer, var error) = await AskUser.GetAnswer(engine, fa.Message);
+			(var answer, var error) = await AskUser.GetAnswer(engine, context, fa.Message);
 			if (error != null) return (null, error);
 
 			(var isHandled, error) = await fileAccessHandler.ValidatePathResponse(fa.AppName, fa.Path, answer.ToString(), engine.FileSystem.Id);
@@ -618,7 +622,7 @@ namespace PLang.Modules
 			long time = goalStep.CacheHandler?.TimeInMilliseconds ?? 0;
 			if (time == 0) return;
 
-			var cacheKey = variableHelper.LoadVariables(goalStep.CacheHandler?.CacheKey)?.ToString();
+			var cacheKey = memoryStack.LoadVariables(goalStep.CacheHandler?.CacheKey)?.ToString();
 			if (string.IsNullOrEmpty(cacheKey))
 			{
 				cacheKey = goalStep.CacheHandler?.CacheKey;
@@ -680,7 +684,7 @@ namespace PLang.Modules
 			{
 				if (function.ReturnValues == null) return false;
 
-				var cacheKey = variableHelper.LoadVariables(goalStep.CacheHandler?.CacheKey)?.ToString();
+				var cacheKey = memoryStack.LoadVariables(goalStep.CacheHandler?.CacheKey)?.ToString();
 				if (string.IsNullOrEmpty(cacheKey))
 				{
 					cacheKey = goalStep.CacheHandler?.CacheKey;
@@ -742,7 +746,8 @@ namespace PLang.Modules
 		//TODO: should create a cleanup here to kill processes correctly
 		protected void KeepAlive(object instance, string key)
 		{
-			var alives = AppContext.GetData("KeepAlive") as List<Alive>;
+			var appContext = engine.GetAppContext();
+			var alives = appContext.GetOrDefault<List<Alive>>("KeepAlive");
 			if (alives == null) alives = new List<Alive>();
 
 			var aliveType = alives.FirstOrDefault(p => p.Type == instance.GetType() && p.Key == key);
@@ -755,12 +760,13 @@ namespace PLang.Modules
 			{
 				aliveType.Instances.Add(instance);
 			}
-			AppContext.SetData("KeepAlive", alives);
+
+			appContext.AddOrReplace("KeepAlive", alives);
 		}
 
 		public void RemoveKeepAlive(object instance, string key)
 		{
-			var alives = AppContext.GetData("KeepAlive") as List<Alive>;
+			var alives = appContext.GetOrDefault<List<Alive>>("KeepAlive");
 			if (alives == null) return;
 
 			var aliveType = alives.FirstOrDefault(p => p.Type == instance.GetType() && p.Key == key);
@@ -772,8 +778,7 @@ namespace PLang.Modules
 				{
 					alives.Remove(aliveType);
 				}
-
-				AppContext.SetData("KeepAlive", alives);
+				appContext.AddOrReplace("KeepAlive", alives);
 			}
 		}
 
@@ -816,7 +821,7 @@ namespace PLang.Modules
 		public T GetProgramModule<T>() where T : BaseProgram
 		{
 			var program = container.GetInstance<T>();
-			program.Init(container, goal, goalStep, instruction, this.HttpContext);
+			program.Init(container, goal, goalStep, instruction, contextAccessor);
 			return program;
 		}
 		/*

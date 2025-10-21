@@ -1,10 +1,12 @@
-﻿using Nethereum.Contracts.Standards.ENS.OffchainResolver.ContractDefinition;
+﻿using NBitcoin.Protocol;
+using Nethereum.Contracts.Standards.ENS.OffchainResolver.ContractDefinition;
 using Newtonsoft.Json;
 using PLang.Building.Model;
 using PLang.Errors;
 using PLang.Models;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.Metrics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -47,7 +49,7 @@ namespace PLang.Utils
 			return null;
 		}
 
-		public record Callback(string Path, Dictionary<string, object?>? CallbackData, Stack<CallbackInfo> CallbackInfos, SignedMessage Signature);
+		public record Callback(string Path, Dictionary<string, object?>? CallbackData, CallbackInfo CallbackInfo, SignedMessage Signature);
 		public record CallbackInfo(string GoalName, string GoalHash, int StepIndex, string? Answer = null);
 		public static async Task<Callback?> GetCallback(string path, Dictionary<string, object?>? callbackData, 
 			Runtime.MemoryStack memoryStack, GoalStep? step, Modules.ProgramFactory programFactory, bool skipNonce = false)
@@ -55,21 +57,53 @@ namespace PLang.Utils
 			if (step == null) return null;
 
 			
-			var callbackInfos = new Stack<CallbackInfo>();
+	//		var callbackInfos = new Stack<CallbackInfo>();
 			var goal = step.Goal;
 			string method = goal.GoalName;
 
-			callbackInfos.Push(new CallbackInfo(goal.GoalName, goal.Hash, goal.CurrentStepIndex));
+			var callBackInfo = new CallbackInfo(goal.GoalName, goal.Hash, goal.CurrentStepIndex);
+			//			callbackInfos.Push(new CallbackInfo(goal.GoalName, goal.Hash, goal.CurrentStepIndex));
 
-			if (goal.ParentGoal != null)
-			{
-				var parentGoal = goal.ParentGoal;
-				while (parentGoal != null)
+			/*
+			 * TODO: fix this
+			 * 
+			 * List<string> callStackGoals is a temp fix, the ParentGoal should not be set on goal object
+			 * it should be set on CallStack object that needs to be created, goal object should
+			 * not change at runtime. this is because if same goal is called 2 or more times
+			 * in a callstack, the parent goal is overwritten
+			 * 
+			List<string> callStackGoals = new();
+			callStackGoals.Add(goal.RelativePrPath);
+
+
+			var parentGoal = goal.ParentGoal;
+			while (parentGoal != null)
+			{					
+				if (callStackGoals.Contains(parentGoal.RelativePrPath))
+				{
+					parentGoal = null;
+				} else
 				{
 					callbackInfos.Push(new CallbackInfo(parentGoal.GoalName, parentGoal.Hash, parentGoal.CurrentStepIndex));
+					callStackGoals.Add(parentGoal.RelativePrPath);
+
 					parentGoal = parentGoal.ParentGoal;
+					
 				}
+
+				// todo: temp thing while figuring out to deep calls
+				int counter = 0;
+				if (counter++ > 100)
+				{
+					Console.WriteLine($"To deep: GoalHelper.IsPartOfCallStack - goalName: {goal?.GoalName}");
+					break;
+				}
+
+				
 			}
+
+			*/
+
 			var encryption = programFactory.GetProgram<Modules.CryptographicModule.Program>(step);
 
 			if (callbackData != null)
@@ -94,8 +128,8 @@ namespace PLang.Utils
 					}
 				}
 			}
-			var signed = await programFactory.GetProgram<Modules.IdentityModule.Program>(step).Sign(callbackInfos, skipNonce : skipNonce);
-			return new Callback(path, callbackData, callbackInfos, signed);
+			var signed = await programFactory.GetProgram<Modules.IdentityModule.Program>(step).Sign(callBackInfo, skipNonce : skipNonce);
+			return new Callback(path, callbackData, callBackInfo, signed);
 		}
 	}
 }

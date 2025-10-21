@@ -11,6 +11,8 @@ using PLang.Interfaces;
 using PLang.Modules;
 using PLang.Modules.WebserverModule;
 using PLang.Runtime;
+using PLang.Utils.JsonConverters;
+using Sprache;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -486,7 +488,7 @@ public class TypeHelper : ITypeHelper
 		if (obj == null) return default;
 		return (T?)obj;
 	}
-	public static object? ConvertToType(object? value, Type targetType)
+	public static object? ConvertToType(object? value, Type targetType, JsonConverter? jsonConverter = null, string? variableName = null)
 	{
 		if (value == null) return null;
 		if (value is System.DBNull) return null;
@@ -512,9 +514,14 @@ public class TypeHelper : ITypeHelper
 		if (targetType.IsInstanceOfType(value))
 			return value;
 
+		var settings = new JsonSerializerSettings();
+		if (jsonConverter != null) settings.Converters.Add(jsonConverter);
+		var serializer = JsonSerializer.Create(settings);
+
 		if (value is JObject jobj)
 		{
-			return jobj.ToObject(targetType);
+			
+			return jobj.ToObject(targetType, serializer);
 		}
 		if (value is JValue jValue)
 		{
@@ -525,11 +532,15 @@ public class TypeHelper : ITypeHelper
 
 		if (value is JArray jArray)
 		{
-			return jArray.ToObject(targetType);
+			return jArray.ToObject(targetType, serializer);
 		}
 		if (value is JToken jToken)
 		{
-			return jToken.ToObject(targetType);
+			return jToken.ToObject(targetType, serializer);
+		}
+		if (value is DateTimeOffset dto && targetType == typeof(DateTime))
+		{
+			return dto.DateTime;
 		}
 
 		if (IsListOfJToken(value) && targetType == typeof(string))
@@ -538,7 +549,20 @@ public class TypeHelper : ITypeHelper
 			return jArray2.ToString();
 		}
 
-		if (TypeHelper.IsRecordType(value) && targetType == typeof(string))
+		if (IsDictionaryType(targetType))
+		{
+			return ConvertToDictionary(targetType, value, variableName);
+		}
+
+
+		if (typeof(System.Collections.IEnumerable).IsAssignableFrom(targetType) && targetType != typeof(string))
+		{
+			return ConvertToList(targetType, value);
+		}
+
+		
+
+			if (TypeHelper.IsRecordType(value) && targetType == typeof(string))
 		{
 			if (IsRecordWithToString(value))
 			{
@@ -626,6 +650,61 @@ public class TypeHelper : ITypeHelper
 
 		}
 	}
+
+	public static IDictionary ConvertToDictionary(Type targetType, object value, string? variableName = null)
+	{
+		var keyType = targetType.GetGenericArguments()[0];
+		var valType = targetType.GetGenericArguments()[1];
+
+		if (value is IDictionary<string, object?> dict)
+		{
+			var result = (System.Collections.IDictionary)Activator.CreateInstance(targetType)!;
+			foreach (var kvp in dict)
+				result.Add(ConvertToType(kvp.Key, keyType)!, ConvertToType(kvp.Value, valType));
+			return result;
+		} else if (variableName != null)
+		{
+			var result = (System.Collections.IDictionary)Activator.CreateInstance(targetType)!;
+			result.Add(variableName, value);
+			return result;
+		}
+
+		throw new Exception("Not sure what todo?");
+	}
+	public static IList ConvertToList(Type targetType, object value)
+	{
+		// Figure out the element type
+		var elemType =
+			targetType.IsArray
+				? targetType.GetElementType()!
+				: targetType.GetGenericArguments().FirstOrDefault() ?? typeof(object);
+
+		// Normalize value into IEnumerable<object>
+		var values = value is System.Collections.IEnumerable e && value is not string
+			? e.Cast<object?>()
+			: new[] { value };
+
+		// Materialize into List<elemType>
+		var listType = typeof(List<>).MakeGenericType(elemType);
+		var list = (System.Collections.IList)Activator.CreateInstance(listType)!;
+
+		foreach (var v in values)
+			list.Add(ConvertToType(v, elemType)!);
+
+		// Adapt to IReadOnlyList<T>, ICollection<T>, etc.
+		if (targetType.IsAssignableFrom(listType))
+			return list;
+
+		if (targetType.IsArray)
+		{
+			var arr = Array.CreateInstance(elemType, list.Count);
+			list.CopyTo(arr, 0);
+			return arr;
+		}
+
+		return list; // caller can cast if interface
+	}
+
 	static bool IsListOfJToken(object obj)
 	{
 		if (obj == null) return false;
@@ -712,7 +791,7 @@ public class TypeHelper : ITypeHelper
 		{
 			theNumericType = item1.GetType();
 			var obj = TypeHelper.ConvertToType(item2, item1.GetType());
-			if (obj != null)
+			if (obj != null && obj.GetType() == theNumericType)
 			{
 				success = true;
 				return (item1, obj);
@@ -896,10 +975,26 @@ public class TypeHelper : ITypeHelper
 
 		return toStringMethod;
 	}
+	public static bool IsListOrDict(Type? type)
+	{
+		if (type == null)
+			return false;
 
+		return typeof(IList).IsAssignableFrom(type) ||
+			   typeof(IDictionary).IsAssignableFrom(type) ||
+			   typeof(ITuple).IsAssignableFrom(type);
+	}
 	public static bool IsListOrDict(object? obj)
 	{
 		return (obj is IList || obj is IDictionary || obj is ITuple);
+	}
+
+	internal static bool IsList(Type type)
+	{
+		if (type == null)
+			return false;
+
+		return typeof(IList).IsAssignableFrom(type);
 	}
 
 	public static bool ImplementsDict(object? obj, out IDictionary? dict)
@@ -952,7 +1047,27 @@ public class TypeHelper : ITypeHelper
 		return result;
 	}
 
+	private static bool IsDictionaryType(Type type)
+	{
+		if (!type.IsGenericType)
+			return false;
 
+		var genericTypeDef = type.GetGenericTypeDefinition();
+
+		// Check direct types
+		if (genericTypeDef == typeof(Dictionary<,>) ||
+			genericTypeDef == typeof(IDictionary<,>) ||
+			genericTypeDef == typeof(IReadOnlyDictionary<,>))
+		{
+			return true;
+		}
+
+		// Check if implements IDictionary<,> or IReadOnlyDictionary<,>
+		return type.GetInterfaces().Any(i =>
+			i.IsGenericType &&
+			(i.GetGenericTypeDefinition() == typeof(IDictionary<,>) ||
+			 i.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>)));
+	}
 
 	public static string? GetAsString(object? obj, string format = "text")
 	{
@@ -1015,5 +1130,7 @@ public class TypeHelper : ITypeHelper
 
 	private static object? GetDefault(Type t) =>
 		t.IsValueType ? Activator.CreateInstance(t) : null;
+
+	
 }
 

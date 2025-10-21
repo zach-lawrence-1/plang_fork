@@ -2,6 +2,7 @@
 using Newtonsoft.Json;
 using PLang.Attributes;
 using PLang.Building.Model;
+using PLang.Errors.AskUser;
 using PLang.Errors.Events;
 using PLang.Errors.Runtime;
 using PLang.Runtime;
@@ -9,6 +10,7 @@ using PLang.Utils;
 using System.Runtime.Serialization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using static PLang.Services.OutputStream.Transformers.PlangTransformer;
 using static PLang.Utils.StepHelper;
 
 namespace PLang.Errors
@@ -116,7 +118,7 @@ namespace PLang.Errors
 
 	}
 
-	public interface IErrorHandled : IEventError, IError { }
+	public interface IErrorHandled : IError { }
 
 
 	public class ExceptionDto
@@ -136,7 +138,7 @@ namespace PLang.Errors
 			};
 	}
 
-	public record EndGoal(Goal EndingGoal, GoalStep Step, string Message, int StatusCode  = 200, int Levels = 0) 
+	public record EndGoal(bool Terminate, Goal EndingGoal, GoalStep Step, string Message, int StatusCode  = 200, int Levels = 0) 
 		: StepError(Message, Step, "EndGoal", StatusCode), IErrorHandled
 	{
 		public override GoalStep? Step { get; set; } = Step;
@@ -178,4 +180,5 @@ namespace PLang.Errors
 			writer.WriteEndObject();
 		}
 	}
+
 }

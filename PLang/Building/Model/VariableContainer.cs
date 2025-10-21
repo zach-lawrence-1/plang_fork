@@ -4,6 +4,7 @@ using PLang.Runtime;
 using System.Reflection.Metadata;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
+using static PLang.Utils.VariableHelper;
 
 namespace PLang.Building.Model
 {
@@ -25,21 +26,22 @@ namespace PLang.Building.Model
 		[Newtonsoft.Json.JsonIgnore]
 		[IgnoreDataMemberAttribute]
 		[System.Text.Json.Serialization.JsonIgnore]
-		protected readonly List<Variable> _variables = new();
+		protected List<Variable> _variables = new();
 
 		[IgnoreWhenInstructed]
-		public List<Variable> Variables => _variables;
+		public List<Variable> Variables { get { return _variables; } set { _variables = value; } }
 
-	
+		
 		public void AddVariable<T>(T? value, Func<Task>? func = null, string? variableName = null)
 		{
 			if (value == null) return;
 
 			if (variableName == null) variableName = typeof(T).FullName;
 
-			var variableIdx = _variables.FindIndex(p => p.VariableName.Equals(variableName, StringComparison.OrdinalIgnoreCase));
+			
 			var variable = new Variable(variableName, value) { DisposeFunc = func, Step = GetStep() };
 
+			var variableIdx = _variables.FindIndex(p => p.VariableName.Equals(variableName, StringComparison.OrdinalIgnoreCase));
 			if (variableIdx == -1)
 			{
 				_variables.Add(variable);
@@ -84,7 +86,7 @@ namespace PLang.Building.Model
 			return _variables.Where(p => p.GetType() == typeof(T)).Select(p => (T)p.Value).ToList();
 		}
 
-		public object? GetVariable(string variableName, int level = 0)
+		public object? GetVariable(string variableName, int level = 0, List<string>? callStackGoals = null)
 		{
 			var variable = _variables.FirstOrDefault(p => p.VariableName.Equals(variableName, StringComparison.OrdinalIgnoreCase));
 			if (variable != null) return variable?.Value;
@@ -96,13 +98,26 @@ namespace PLang.Building.Model
 				Console.ForegroundColor = ConsoleColor.Red;
 				Console.WriteLine($"To deep GetVariable. variableName:{variableName} | parent2.goalName:{goalName}");
 				Console.ResetColor();
-				return null;
+				return default;
 			}
 
 			var parent = GetParent();
 			if (parent == null) return default;
 
-			var value = parent.GetVariable(variableName, ++level);
+			/*
+			 * TODO: fix this
+			 * 
+			 * List<string> callStack is a fix, the ParentGoal should not be set on goal object
+			 * it should be set on CallStack object that needs to be created, goal object should
+			 * not change at runtime. this is because if same goal is called 2 or more times
+			 * in a callstack, the parent goal is overwritten
+			 * */
+			if (callStackGoals?.Contains(parent.RelativePrPath) == true) return default;
+			if (callStackGoals == null) callStackGoals = new();
+			callStackGoals.Add(parent.RelativePrPath);
+
+
+			var value = parent.GetVariable(variableName, ++level, callStackGoals);
 			return value;
 		}
 
@@ -110,12 +125,12 @@ namespace PLang.Building.Model
 		protected abstract GoalStep? GetStep();
 		protected abstract void SetVariableOnEvent(Variable goalVariable);
 
-		public T? GetVariable<T>(string? variableName = null, int level = 0)
+		public T? GetVariable<T>(string? variableName = null, int level = 0, List<string>? callStackGoals = null)
 		{
 			
 			if (variableName == null) variableName = typeof(T).FullName;
 			
-			var variable = _variables.FirstOrDefault(p => p.VariableName.Equals(variableName, StringComparison.OrdinalIgnoreCase));
+			var variable = _variables.FirstOrDefault(p => p.VariableName?.Equals(variableName, StringComparison.OrdinalIgnoreCase) == true);
 			if (variable != null) return (T?)variable?.Value;
 
 			if (level > 100)
@@ -131,7 +146,20 @@ namespace PLang.Building.Model
 			var parent = GetParent();
 			if (parent == null) return default;
 
-			T? value = parent.GetVariable<T>(variableName, ++level);
+			/*
+			 * TODO: fix this
+			 * 
+			 * List<string> callStack is a fix, the ParentGoal should not be set on goal object
+			 * it should be set on CallStack object that needs to be created, goal object should
+			 * not change at runtime. this is because if same goal is called 2 or more times
+			 * in a callstack, the parent goal is overwritten
+			 * */
+			if (callStackGoals?.Contains(parent.RelativePrPath) == true) return default;
+			if (callStackGoals == null) callStackGoals = new();
+			callStackGoals.Add(parent.RelativePrPath);
+
+
+			T? value = parent.GetVariable<T>(variableName, ++level, callStackGoals);
 			return value;
 		}
 
@@ -163,6 +191,7 @@ namespace PLang.Building.Model
 
 		public async Task DisposeVariables(MemoryStack memoryStack)
 		{
+			
 			for (int i = _variables.Count - 1; i >= 0; i--)
 			{
 				var variable = _variables[i];
@@ -171,7 +200,7 @@ namespace PLang.Building.Model
 				var parent = GetParent();
 				if (parent != null && memoryStack.ContainsObject(variable))
 				{
-					parent.AddVariable(variable);
+					//parent.AddVariable(variable);
 					continue;
 				}
 
@@ -188,6 +217,8 @@ namespace PLang.Building.Model
 				}
 			}
 			_variables.Clear();
+			_variables = new();
+
 		}
 
 	}

@@ -20,6 +20,7 @@ using PLang.Services.DbService;
 using PLang.Services.LlmService;
 using PLang.Services.OpenAi;
 using PLang.Services.OutputStream;
+using PLang.Services.OutputStream.Sinks;
 using PLang.Services.SettingsService;
 using PLang.Services.SigningService;
 using PLang.Utils;
@@ -42,16 +43,18 @@ namespace PLangTests
 		protected ILlmServiceFactory llmServiceFactory;
 		protected IPseudoRuntime pseudoRuntime;
 		protected IEngine engine;
-		protected EnginePool enginePool;
 		protected ISettingsRepository settingsRepository;
 		protected ISettings settings;
 		protected IEventRuntime eventRuntime;
 		protected ITypeHelper typeHelper;
 		protected PrParser prParser;
-		protected PLangAppContext context;
+		protected PLangAppContext appContext;
+		protected IPLangContextAccessor contextAccessor;
+		protected PLangContext context;
 		protected HttpClient httpClient;
 		protected LlmCaching llmCaching;
 		protected IServiceContainerFactory containerFactory;
+		protected IMemoryStackAccessor memoryStackAccessor;
 		protected MemoryStack memoryStack;
 		protected VariableHelper variableHelper;
 		protected IDbConnection db;
@@ -59,8 +62,8 @@ namespace PLangTests
 		protected IEventSourceRepository eventSourceRepository;
 		protected IEncryption encryption;
 		protected IEncryptionFactory encryptionFactory;
-		protected IOutputStream outputStream;
-		protected IOutputStream outputSystemStream;
+		protected IOutputSink outputStream;
+		protected IOutputSink outputSystemStream;
 		protected IOutputStreamFactory outputStreamFactory;
 		protected IOutputSystemStreamFactory outputSystemStreamFactory;
 		protected ProgramFactory programFactory;
@@ -105,14 +108,15 @@ namespace PLangTests
 		{
 			settings.Get(typeof(OpenAiService), "Global_AIServiceKey", Arg.Any<string>(), Arg.Any<string>()).Returns(Environment.GetEnvironmentVariable("OpenAIKey"));
 
-			var llmService = new OpenAiService(settings, logger, llmCaching, context);
+			var llmService = new OpenAiService(settings, logger, llmCaching, appContext);
 			llmServiceFactory.CreateHandler().Returns(llmService);
 		}
 		protected IServiceContainer CreateServiceContainer()
 		{
 			AppContext.SetSwitch(ReservedKeywords.Test, true);
 			container = new ServiceContainer();
-			context = new PLangAppContext();
+			appContext = new PLangAppContext();
+			
 			fileSystem = new PLangMockFileSystem();
 			fileSystem.AddFile(System.IO.Path.Join(Environment.CurrentDirectory, ".build", "info.txt"), Guid.NewGuid().ToString());
 
@@ -123,7 +127,7 @@ namespace PLangTests
 			{
 				return new PlangFileSystemFactory(container);
 			});
-			this.settingsRepository = new SqliteSettingsRepository(container.GetInstance<IPLangFileSystemFactory>(), context, logger);
+			this.settingsRepository = new SqliteSettingsRepository(container.GetInstance<IPLangFileSystemFactory>(), appContext, logger);
 			container.RegisterInstance<ISettingsRepository>(settingsRepository);
 			fileAccessHandler = Substitute.For<IFileAccessHandler>();
 			settingsRepositoryFactory = Substitute.For<ISettingsRepositoryFactory>();
@@ -131,21 +135,19 @@ namespace PLangTests
 			container.RegisterInstance<ISettingsRepositoryFactory>(settingsRepositoryFactory);
 
 			containerFactory = Substitute.For<IServiceContainerFactory>();
-			containerFactory.CreateContainer(Arg.Any<PLangAppContext>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IOutputStreamFactory>(), 
-				Arg.Any<IOutputSystemStreamFactory>(), Arg.Any<IErrorHandlerFactory>(), Arg.Any<IErrorSystemHandlerFactory>()).Returns(p =>
+			containerFactory.CreateContainer(Arg.Any<PLangAppContext>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IErrorHandlerFactory>(), Arg.Any<IErrorSystemHandlerFactory>()).Returns(p =>
 			{
 				var container = CreateServiceContainer();
 
 				IEngine engine = container.GetInstance<IEngine>();
-				engine.GetMemoryStack().Returns(a =>
+				context.MemoryStack.Returns(a =>
 				{
-					return new MemoryStack(pseudoRuntime, engine, settings, context);
+					return new MemoryStack(pseudoRuntime, engine, settings, variableHelper, contextAccessor);
 				});
 				return container;
 			});
 			container.RegisterInstance<IServiceContainerFactory>(containerFactory);
 
-			context = new PLangAppContext();
 			container.RegisterInstance(context);
 
 			context.AddOrReplace(ReservedKeywords.Inject_Caching, typeof(InMemoryCaching).FullName);
@@ -168,13 +170,13 @@ namespace PLangTests
 			llmServiceFactory.CreateHandler().Returns(llmService);
 			container.RegisterInstance(llmServiceFactory);
 
-			outputStream = Substitute.For<IOutputStream>();
+			outputStream = Substitute.For<IOutputSink>();
 			container.RegisterInstance(outputStream);
 			outputStreamFactory = Substitute.For<IOutputStreamFactory>();
 			outputStreamFactory.CreateHandler().Returns(outputStream);
 			container.RegisterInstance(outputStreamFactory);
 
-			outputSystemStream = Substitute.For<IOutputStream>();
+			outputSystemStream = Substitute.For<IOutputSink>();
 			container.RegisterInstance(outputSystemStream);
 			outputSystemStreamFactory = Substitute.For<IOutputSystemStreamFactory>();
 			outputSystemStreamFactory.CreateHandler().Returns(outputStream);
@@ -224,12 +226,12 @@ namespace PLangTests
 			container.Register<IGoalParser, GoalParser>();
 			goalParser = container.GetInstance<IGoalParser>();
 
-			dependancyHelper = new DependancyHelper(fileSystem, logger, prParser);
+			dependancyHelper = new DependancyHelper(fileSystem, logger);
 
 			typeHelper = new TypeHelper(fileSystem, dependancyHelper);
 			container.RegisterInstance(typeHelper);
 
-			memoryStack = new MemoryStack(pseudoRuntime, engine, settings, context);
+			memoryStack = new MemoryStack(pseudoRuntime, engine, settings, variableHelper, contextAccessor);
 			container.RegisterInstance(memoryStack);
 
 			archiver = Substitute.For<IArchiver>();
@@ -241,13 +243,15 @@ namespace PLangTests
 			llmCaching = new LlmCaching(fileSystem, settings);
 			container.RegisterInstance(llmCaching);
 
-			variableHelper = new VariableHelper(memoryStack, settings, logger);
+			variableHelper = new VariableHelper(settings, logger);
 			container.RegisterInstance(variableHelper);
 
 			container.RegisterInstance(prParser);
 
 			RegisterModules(container);
 
+			context = new PLangContext(memoryStack, engine, ExecutionMode.Console);
+			
 			return container;
 		}
 

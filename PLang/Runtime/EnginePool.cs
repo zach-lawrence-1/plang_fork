@@ -4,6 +4,7 @@ using PLang.Building.Model;
 using PLang.Container;
 using PLang.Interfaces;
 using PLang.Services.OutputStream;
+using PLang.Services.OutputStream.Sinks;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -18,13 +19,16 @@ using System.Threading.Tasks;
 
 namespace PLang.Runtime
 {
+	/*
+	public record EngineInfo(IEngine Engine, DateTime LastAccess);
+
+
 	public class EnginePool : IDisposable
 	{
-		private readonly ConcurrentBag<IEngine> _pool = new();
-		private readonly SemaphoreSlim _semaphore;
+		private readonly ConcurrentQueue<EngineInfo> _pool = new();
+
 		private readonly Func<IEngine> _factory;
 		private readonly int _maxSize;
-		private int _currentCount;
 		private bool disposed;
 
 		public EnginePool(int initialSize, Func<IEngine> factory, int maxSize = 50)
@@ -34,85 +38,105 @@ namespace PLang.Runtime
 
 			_factory = factory ?? throw new ArgumentNullException(nameof(factory));
 			_maxSize = maxSize;
-			//todo: dont really understand this SemaphoreSlim, seems to work
-			_semaphore = new SemaphoreSlim(maxSize, maxSize);
-			
+
+			_ = Task.Run(async () =>
+			{
+				while (!disposed)
+				{
+					await Task.Delay(TimeSpan.FromSeconds(30));
+					await CheckPoolSize();
+				}
+			});
+
 			for (int i = 0; i < initialSize; i++)
 			{
 				var engine = _factory();
-				SetProperties(engine, engine.ParentEngine, null, engine.Name, engine.OutputStreamFactory.CreateHandler());
+				SetProperties(engine, engine.ParentEngine, null, engine.Name);
 
-				_pool.Add(engine);
-				//Interlocked.Increment(ref _currentCount);
+				_pool.Enqueue(new EngineInfo(engine, DateTime.Now));
 			}
+		}
+
+		private async Task CheckPoolSize()
+		{
+			var now = DateTime.UtcNow;
+			var keep = new List<EngineInfo>();
+
+			while (_pool.TryDequeue(out var info))
+			{
+				if (now - info.LastAccess < TimeSpan.FromMinutes(3) || keep.Count < 2)
+					keep.Add(info);
+				else
+				{
+					var proc = Process.GetCurrentProcess();
+					
+					try { 
+						info.Engine.Container.Dispose();
+					}
+					catch (Exception ex)
+					{
+						Console.WriteLine("Dispose engine on CheckPoolSize:" + ex);
+
+					}
+					
+				}
+			}
+
+			foreach (var item in keep)
+				_pool.Enqueue(item);
+
+
 		}
 
 		public void ReloadGoals()
 		{
-			foreach (var engine in _pool)
+			foreach (var engineInfo in _pool)
 			{
-				engine.PrParser.ForceLoadAllGoals();
+				engineInfo.Engine.PrParser.ForceLoadAllGoals();
+				engineInfo.Engine.GetEventRuntime().Reload();
 			}
 		}
 
-		public async Task<IEngine> RentAsync(IEngine parentEngine, GoalStep? callingStep, string name, IOutputStream? outputStream = null, HttpContext? httpContext = null)
+		public async Task<IEngine> RentAsync(IEngine parentEngine, GoalStep? callingStep, string name)
 		{
-			if (_pool.TryTake(out var engine))
+			var proc = Process.GetCurrentProcess();
+
+			if (_pool.TryDequeue(out var engineInfo))
 			{
-				return SetProperties(engine, parentEngine, callingStep, name, outputStream, httpContext);
+				return SetProperties(engineInfo.Engine, parentEngine, callingStep, name);
 			}
+			
+			Console.WriteLine($"Create new engine: {_pool.Count}");
 
 			var newEngine = _factory();
-			return SetProperties(newEngine, parentEngine, callingStep, name, outputStream, httpContext);
+			return SetProperties(newEngine, parentEngine, callingStep, name);
 		}
 
-		private IEngine SetProperties(IEngine engine, IEngine parentEngine, GoalStep? callingStep, string name, IOutputStream? outputStream, HttpContext? httpContext = null)
+		private IEngine SetProperties(IEngine engine, IEngine parentEngine, GoalStep? callingStep, string name)
 		{
 			engine.Name = name;
-			engine.SetParentEngine(parentEngine);
-			engine.CallbackInfos = parentEngine.CallbackInfos;
-			
+			engine.SetParentEngine(parentEngine);			
+			engine.AddContext("!plang.osPath", engine.FileSystem.SystemDirectory);
+			engine.AddContext("!plang.rootPath", parentEngine.Path ?? engine.FileSystem.RootDirectory);
+			engine.SystemSink = parentEngine.SystemSink;
+			engine.UserSink = parentEngine.UserSink;
 
-			if (outputStream != null)
+			foreach (var item in parentEngine.GetAppContext())
 			{
-				engine.SetOutputStream(outputStream);
-			} else
-			{
-				outputStream = parentEngine.OutputStreamFactory.CreateHandler();
-				engine.SetOutputStream(outputStream);
-			}
-			engine.OutputStreamFactory.SetEngine(engine);
-
-			if (outputStream is HttpOutputStream hos)
-			{
-				engine.HttpContext = hos.HttpContext;
+				engine.GetAppContext().AddOrReplace(item.Key, item.Value);
 			}
 
-			if (callingStep != null)
-			{
-				engine.SetCallingStep(callingStep);
-			}
 
-			//engine.GetContext().Clear();
-			foreach (var item in parentEngine.GetContext())
-			{
-				engine.GetContext().AddOrReplace(item.Key, item.Value);
-			}
-
-			//engine.GetMemoryStack().Clear();
-			foreach (var item in parentEngine.GetMemoryStack().GetMemoryStack())
-			{
-				engine.GetMemoryStack().Put(item, callingStep);
-			}
-						
 			return engine;
 		}
 
 		public void Return(IEngine engine, bool reset = false)
 		{
+			throw new Exception("Depricated - Return");
 			engine.Return(reset);
-
-			_pool.Add(engine);
+			
+			_pool.Enqueue(new EngineInfo(engine, DateTime.Now));
+			Console.WriteLine("Return engine:" + _pool.Count);
 		}
 
 		public virtual void Dispose()
@@ -121,8 +145,14 @@ namespace PLang.Runtime
 			{
 				return;
 			}
-			_semaphore.Dispose();
+
+			foreach (var item in _pool)
+			{
+				item.Engine.Dispose();
+			}
+			Console.WriteLine("Disposed engines in pool");
 			this.disposed = true;
+
 		}
 
 		protected virtual void ThrowIfDisposed()
@@ -132,5 +162,5 @@ namespace PLang.Runtime
 				throw new ObjectDisposedException(this.GetType().FullName);
 			}
 		}
-	}
+	}*/
 }

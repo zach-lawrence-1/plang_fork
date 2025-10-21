@@ -23,20 +23,25 @@ using static PLang.Services.CompilerService.CSharpCompiler;
 
 namespace PLang.Modules.ConditionalModule
 {
-	[Description(@"if statement for the user intent. Example 1:'if %isValid% is true then call SomeGoal, else call OtherGoal', this condition would return true if %isValid% is true and call a goals on either conditions. Example 2:'if %address% is empty then', this would check if the %address% variable is empty and return true if it is, else false. Use when checking if file or directory exists. Prefer predefined methods in this module over SimpleCondition and CompoundCondition")]
+	[Description(@"if statement for the user intent. Example 1:'if %isValid% is true then call SomeGoal, else call OtherGoal', this condition would return true if %isValid% is true and call a goals on either conditions. Example 2:'if %address% is empty then', this would check if the %address% variable is empty and return true if it is, else false. Use when checking if file or directory exists. Prefer predefined methods in this module over SimpleCondition and CompoundCondition. 
+if statement can throw an error, e.g. `if %isValid% is false, then throw error 'Not valid'`
+
+")]
 	public class Program : BaseProgram
 	{
 		private readonly IEngine engine;
 		private readonly IPseudoRuntime pseudoRuntime;
 		private readonly IPLangFileSystem fileSystem;
 		private readonly ILogger logger;
+		private readonly IPLangContextAccessor contextAccessor;
 
-		public Program(IEngine engine, IPseudoRuntime pseudoRuntime, IPLangFileSystem fileSystem, ILogger logger) : base()
+		public Program(IEngine engine, IPseudoRuntime pseudoRuntime, IPLangFileSystem fileSystem, ILogger logger, IPLangContextAccessor contextAccessor) : base()
 		{
 			this.engine = engine;
 			this.pseudoRuntime = pseudoRuntime;
 			this.fileSystem = fileSystem;
 			this.logger = logger;
+			this.contextAccessor = contextAccessor;
 		}
 
 		public async Task<(object?, IError?)> FileExists(string filePathOrVariableName, GoalToCallInfo? goalToCallIfTrue = null, GoalToCallInfo? goalToCallIfFalse = null,
@@ -62,7 +67,7 @@ namespace PLang.Modules.ConditionalModule
 			return await ExecuteResult(result, goalToCallIfTrue, goalToCallIfFalse, throwErrorOnTrue, throwErrorOnFalse);
 		}
 
-		[Description(@"Operator: ==|!=|<|>|<=|>=|in|contains|startswith|endswith|indexOf. IsNot property indicates if the condition is a negation of the specified operator. 
+		[Description(@"Operator: ==|!=|<|>|<=|>=|in|isEmpty|contains|startswith|endswith|indexOf. IsNot property indicates if the condition is a negation of the specified operator. 
 IsNot=True for ‘is not’, ‘does not’, 
 Logic: convert ""&&"" => ""AND"", ""||"" => ""OR""
 "
@@ -257,6 +262,11 @@ Logic: convert ""&&"" => ""AND"", ""||"" => ""OR""
 
 		}
 
+		[Description(@"Check if item equals(==) another object. 
+`if %id% == 100 then IsEqual, else IsNotEqual....` => IsEqual is goalToCallIfTrue, IsNotEqual is goalToCallIfFalse
+`if %name% is 'john'....`
+`if %zip equals 123....
+")]
 		public async Task<(object? Result, IError? Error)> IsEqual(object? item1, object? item2, GoalToCallInfo? goalToCallIfTrue = null,
 			GoalToCallInfo? goalToCallIfFalse = null, bool ignoreCase = true,
 			ErrorInfo? throwErrorOnTrue = null, ErrorInfo? throwErrorOnFalse = null)
@@ -383,7 +393,7 @@ Logic: convert ""&&"" => ""AND"", ""||"" => ""OR""
 			catch (Exception ex)
 			{
 				var engine = ((ServiceContainer)container).GetInstance<IEngine>();
-				var error = await CodeExceptionHandler.GetError(engine, ex, implementation, goalStep);
+				var error = await CodeExceptionHandler.GetError(engine, ex, implementation, goalStep, context);
 				return (null, error);
 			}
 
@@ -401,7 +411,7 @@ Logic: convert ""&&"" => ""AND"", ""||"" => ""OR""
 			{
 				if (VariableHelper.IsVariable(goalToCallOnTrue))
 				{
-					goalToCallOnTrue.Name = variableHelper.LoadVariables(goalToCallOnTrue.Name)?.ToString();
+					goalToCallOnTrue.Name = memoryStack.LoadVariables(goalToCallOnTrue.Name)?.ToString();
 				}
 				goalToCall = goalToCallOnTrue;
 			}
@@ -409,7 +419,7 @@ Logic: convert ""&&"" => ""AND"", ""||"" => ""OR""
 			{
 				if (VariableHelper.IsVariable(goalToCallOnFalse))
 				{
-					goalToCallOnFalse.Name = variableHelper.LoadVariables(goalToCallOnFalse.Name)?.ToString();
+					goalToCallOnFalse.Name = memoryStack.LoadVariables(goalToCallOnFalse.Name)?.ToString();
 				}
 				goalToCall = goalToCallOnFalse;
 			}
@@ -418,9 +428,9 @@ Logic: convert ""&&"" => ""AND"", ""||"" => ""OR""
 			IError? error = null;
 			if (goalToCall != null)
 			{
-				goalToCall.Parameters = variableHelper.LoadVariables(goalToCall.Parameters);
+				goalToCall.Parameters = memoryStack.LoadVariables(goalToCall.Parameters);
 
-				task = pseudoRuntime.RunGoal(engine, context, goal.RelativeAppStartupFolderPath, goalToCall, goal);
+				task = pseudoRuntime.RunGoal(engine, contextAccessor, goal.RelativeAppStartupFolderPath, goalToCall, goal);
 				if (task != null)
 				{
 					try

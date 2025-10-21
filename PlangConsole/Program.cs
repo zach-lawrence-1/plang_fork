@@ -17,17 +17,14 @@ Console.CancelKeyPress += (_, e) =>
 {
 	e.Cancel = true;
 
-	var alives = AppContext.GetData("KeepAlive") as List<Alive>;
-	foreach (var alive in alives ?? [])
-	{
-		alive.Dispose();		
-	}
 	Environment.Exit(0);
 };
 
 
 if (builder)
 {
+	AppContext.SetSwitch("Builder", true);
+
 	var container = new ServiceContainer();
 	container.RegisterForPLangBuilderConsole(Environment.CurrentDirectory, Path.DirectorySeparatorChar.ToString());
 
@@ -54,6 +51,8 @@ if (runtime)
 
 	var fileAccessHandler = container.GetInstance<PLang.SafeFileSystem.IFileAccessHandler>();
 	fileAccessHandler.GiveAccess(Environment.CurrentDirectory, Path.Join(AppContext.BaseDirectory, "os"));
+	var engine = container.GetInstance<IEngine>();
+	engine.Name = "Console";
 
 	var pLanguage = new Executor(container);
 	var result = pLanguage.Execute(args, ExecuteType.Runtime).GetAwaiter().GetResult();

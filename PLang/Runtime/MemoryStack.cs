@@ -1,5 +1,7 @@
 ﻿
+using LightInject;
 using Microsoft.IdentityModel.Tokens;
+using Nethereum.Model;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NSec.Cryptography;
@@ -27,6 +29,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using static NBitcoin.Scripting.PubKeyProvider;
 using static PLang.Utils.VariableHelper;
 
 namespace PLang.Runtime
@@ -50,6 +53,22 @@ namespace PLang.Runtime
 		public GoalStep Step { get; set; }
 	};
 
+	public interface IMemoryStackAccessor
+	{
+		MemoryStack Current { get; set; }
+	}
+
+	public class MemoryStackAccessor : IMemoryStackAccessor
+	{
+		private static AsyncLocal<MemoryStack> _current = new AsyncLocal<MemoryStack>();
+
+		public MemoryStack Current
+		{
+			get => _current.Value;
+			set => _current.Value = value;
+		}
+	}
+
 
 	public class MemoryStack
 	{
@@ -57,16 +76,45 @@ namespace PLang.Runtime
 		private readonly IPseudoRuntime pseudoRuntime;
 		private readonly IEngine engine;
 		private readonly ISettings settings;
-		private readonly PLangAppContext context;
+		private readonly VariableHelper variableHelper;
+		private readonly IPLangContextAccessor contextAccessor;
+		private PLangContext context;
+
+		public MemoryStack Clone(IEngine engine)
+		{
+			ConcurrentDictionary<string, ObjectValue> newVariables = new ConcurrentDictionary<string, ObjectValue>(variables);
+			var newMemoryStack = new MemoryStack(pseudoRuntime, engine, settings, variableHelper, contextAccessor);
+			newMemoryStack.variables = newVariables;
+			return newMemoryStack;
+		}
 
 		public Goal Goal { get; set; }
+		public PLangContext Context
+		{
+			get { return context; }
+			set { context = value; }
+		}
 
-		public MemoryStack(IPseudoRuntime pseudoRuntime, IEngine engine, ISettings settings, PLangAppContext context)
+		public static MemoryStack New(IServiceContainer container, IEngine engine)
+		{
+			return new MemoryStack(container.GetInstance<IPseudoRuntime>(), engine, container.GetInstance<ISettings>(), container.GetInstance<VariableHelper>(), container.GetInstance<IPLangContextAccessor>());
+		}
+
+		public MemoryStack(IPseudoRuntime pseudoRuntime, IEngine engine, ISettings settings, VariableHelper variableHelper, IPLangContextAccessor contextAccessor)
 		{
 			this.pseudoRuntime = pseudoRuntime;
 			this.engine = engine;
 			this.settings = settings;
-			this.context = context;
+			this.variableHelper = variableHelper;
+			this.contextAccessor = contextAccessor;
+			Put(new DynamicObjectValue("Now", () => { return SystemTime.Now(); }, typeof(DateTime), isSystemVariable: true));
+			Put(new DynamicObjectValue("NowUtc", () => { return SystemTime.UtcNow(); }, typeof(DateTime), isSystemVariable: true));
+
+			Put(new DynamicObjectValue(ReservedKeywords.MemoryStack, () =>
+			{
+				return GetMemoryStackJson();
+			}, typeof(Dictionary<string, ObjectValue>), isSystemVariable: true));
+			Put(new DynamicObjectValue(ReservedKeywords.GUID, () => { return Guid.NewGuid(); }, typeof(Guid), isSystemVariable: true));
 		}
 
 		public List<ObjectValue> GetMemoryStack()
@@ -132,6 +180,9 @@ namespace PLang.Runtime
 
 				for (int i = 0; i < varsInStep.Count; i++)
 				{
+					//prevent endless loop
+					if (varsInStep[i].Equals("%!memorystack%", StringComparison.OrdinalIgnoreCase)) continue;
+
 					var ov = this.GetObjectValue(varsInStep[i]);
 
 					if (!ov.Initiated)
@@ -305,12 +356,34 @@ namespace PLang.Runtime
 		{
 			if (context == null) return null;
 
+			var predefined = GetPredefined(keyPath);
+			if (predefined != null) return predefined;
 
-			var contextObject = context.FirstOrDefault(p => p.Key.ToLower() == keyPath.VariableName);
+			var contextObject = context.Items.FirstOrDefault(p => p.Key.Equals(keyPath.VariableName, StringComparison.OrdinalIgnoreCase));
 			if (contextObject.Key == null) return null;
 
+			var dict = contextObject.Value as Dictionary<string, object>;
+			if (dict != null && keyPath.Path != null)
+			{
+				if (dict.TryGetValue(keyPath.Path.TrimStart('.'), out object? value))
+				{
+					return new ObjectValue(keyPath.VariableName, value);
+				}
+				else
+				{
+					return ObjectValue.Nullable(keyPath.FullPath);
+				}
+			}
+			
 			var type = (contextObject.Value != null) ? contextObject.Value.GetType() : typeof(Nullable);
 			return new ObjectValue(keyPath.VariableName, contextObject.Value, type, null, true);
+		}
+
+		private ObjectValue? GetPredefined(KeyPath keyPath)
+		{
+			if (keyPath.VariableName.Equals("identity", StringComparison.OrdinalIgnoreCase)) return new ObjectValue(keyPath.VariableName, context.Identity);
+			if (keyPath.VariableName.Equals("signature", StringComparison.OrdinalIgnoreCase)) return new ObjectValue(keyPath.VariableName, context.SignedMessage);
+			return null;
 		}
 
 		private ObjectValue? GetFromGoal(KeyPath keyPath)
@@ -1226,7 +1299,28 @@ namespace PLang.Runtime
 				throw new Exception($"The key '{key}' cannot be added to memory stack");
 			}
 
-			ObjectValue? prevObjectValue = variables.FirstOrDefault(p => p.Key.Equals(key, StringComparison.OrdinalIgnoreCase)).Value;
+			ObjectValue? prevObjectValue;
+			if (key.Contains("."))
+			{
+				var childObjectValue = GetObjectValue(key);
+				if (childObjectValue.Parent != null)
+				{
+					string childPath = key;
+					var ovToSet = objectValue;
+					
+					(key, objectValue) = GetTopObjectValueAndKey(childObjectValue);
+					prevObjectValue = objectValue;
+					
+					objectValue.Set(childObjectValue.PathAsVariable, ovToSet);
+				} else
+				{
+					prevObjectValue = childObjectValue;
+				}
+			}
+			else
+			{
+				prevObjectValue = variables.FirstOrDefault(p => p.Key.Equals(key, StringComparison.OrdinalIgnoreCase)).Value;
+			}
 
 			if (prevObjectValue != null)
 			{
@@ -1249,17 +1343,22 @@ namespace PLang.Runtime
 			}
 
 		}
+
+		private (string key, ObjectValue objectValue) GetTopObjectValueAndKey(ObjectValue prevObjectValue)
+		{
+			var parent = prevObjectValue.Parent ?? prevObjectValue;
+			while (parent.Parent != null)
+			{
+				parent = parent.Parent;
+			}
+			return (parent.Path, parent);
+		}
+
 		private static readonly object _locker = new();
 
 		private void CallEvent(string eventType, ObjectValue objectValue, GoalStep? step = null)
 		{
 			if (step == null || step.IsEvent) return;
-
-			var context = engine.GetContext();
-			if (context != null && context.ContainsKey(ReservedKeywords.IsEvent))
-			{
-				return;
-			}
 
 			var events = objectValue.Events.Where(p => p.EventType == eventType);
 			foreach (var eve in events)
@@ -1275,12 +1374,12 @@ namespace PLang.Runtime
 				var goal = step.Goal;
 				if (eve.GoalToCall.Name == goal.GoalName) return;
 
-				var task = pseudoRuntime.RunGoal(engine, context, goal.RelativeAppStartupFolderPath, eve.GoalToCall, goal);
+				var task = pseudoRuntime.RunGoal(engine, contextAccessor, goal.RelativeAppStartupFolderPath, eve.GoalToCall, goal);
 				var result = task.GetAwaiter().GetResult();
-				if (result.error != null)
+				if (result.Error != null)
 				{
 					// todo: should call event binding for step 
-					throw new ExceptionWrapper(result.error);
+					throw new ExceptionWrapper(result.Error);
 				}
 			}
 		}
@@ -1981,6 +2080,15 @@ namespace PLang.Runtime
 				if (variable.Value?.Value == goalVariable.Value) return true;
 			}
 			return false;
+		}
+
+		public object? LoadVariables(object? obj, bool emptyIfNotFound = true, object? defaultValue = null)
+		{
+			return variableHelper.LoadVariables(this, obj, emptyIfNotFound, defaultValue);
+		}
+		public Dictionary<string, object?> LoadVariables(Dictionary<string, object?>? items, bool emptyIfNotFound = true)
+		{
+			return variableHelper.LoadVariables(this, items, emptyIfNotFound);
 		}
 	}
 }

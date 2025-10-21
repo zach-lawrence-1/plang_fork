@@ -12,6 +12,8 @@ using PLang.Models;
 using PLang.Resources;
 using PLang.Runtime;
 using PLang.Services.OutputStream;
+using PLang.Services.OutputStream.Messages;
+using PLang.Services.OutputStream.Sinks;
 using PLang.Utils;
 using RazorEngineCore;
 using Scriban;
@@ -22,6 +24,7 @@ using System.ComponentModel;
 using System.Dynamic;
 using System.IO.Compression;
 using System.Threading;
+using System.Threading.Channels;
 using static PLang.Modules.UiModule.Program;
 using static System.Net.Mime.MediaTypeNames;
 
@@ -34,16 +37,9 @@ namespace PLang.Modules.UiModule
 	[Description("Takes any user command and tries to convert it to html. Add, remove, insert content to css selector. Set the (default) layout for the UI. Execute javascript.")]
 	public class Program : BaseProgram, IFlush
 	{
-		private readonly IOutputStreamFactory outputStreamFactory;
-		private readonly MemoryStack memoryStack;
-		private string? clientTarget;
-		public Program(IOutputStreamFactory outputStream, IPLangFileSystem fileSystem, MemoryStack memoryStack) : base()
+		public Program() : base()
 		{
-			this.outputStreamFactory = outputStream;
-			this.fileSystem = fileSystem;
-			this.memoryStack = memoryStack;
 
-			clientTarget = memoryStack.Get("!target") as string;
 		}
 		public enum Type { css, js };
 		[Description("Type=css|js")]
@@ -91,7 +87,7 @@ namespace PLang.Modules.UiModule
 
 
 
-			context.TryGetValue("Layouts", out object? obj);
+			appContext.TryGetValue("Layouts", out object? obj);
 			var layouts = obj as List<LayoutOptions>;
 			if (layouts == null)
 			{
@@ -107,12 +103,12 @@ namespace PLang.Modules.UiModule
 			{
 				layouts[idx] = options;
 			}
-			context.AddOrReplace("Layouts", layouts);
+			appContext.AddOrReplace("Layouts", layouts);
 			return (layouts, null);
 		}
 
 
-		public enum DomMemberKind
+		public enum UiFacet
 		{
 			Property,      // innerHTML, className, etc.
 			Attribute,     // data-id, src, …
@@ -124,36 +120,42 @@ namespace PLang.Modules.UiModule
 
 Attribute: Member is the key in the SetAttribute js method
 ")]
-		public record DomInstruction(string Selector, string Member, object? Value, DomMemberKind Kind = DomMemberKind.Property);
-		public async Task<IError?> SetElement(List<DomInstruction> domInstructions)
+		public record UiInstruction(string Selector, string Member, object? Value, UiFacet Kind = UiFacet.Property);
+		public async Task<IError?> SetElement(List<UiInstruction> uiInstructions, string actor = "user", string channel = "default")
 		{
-			var outputStream = outputStreamFactory.CreateHandler();
-			await outputStream.Write(goalStep, domInstructions, "domInstruction");
-			return null;
 
+			Dictionary<string, object> param = new();
+			param.Add("instructions", uiInstructions);
+
+			var executeMessage = new ExecuteMessage("uiInstruction", param, Channel: channel, Actor: actor, Properties: new Dictionary<string, object?> { ["step"] = goalStep });
+
+			var sink = context.GetSink(actor);
+			return await sink.SendAsync(executeMessage);
 		}
 
-		public record DomRemove(string Selector);
+		public record UiRemove(string Selector);
 		[Description("Remove/delete an element by a css selector")]
-		public async Task<IError?> RemoveElement(List<DomRemove> domRemoves)
+		public async Task<IError?> RemoveElement(List<UiRemove> domRemoves, string actor = "user", string channel = "default")
 		{
-			var outputStream = outputStreamFactory.CreateHandler();
-			await outputStream.Write(goalStep, domRemoves, "domRemove");
-			return null;
+			Dictionary<string, object> param = new();
+			param.Add("instructions", domRemoves);
+
+			var executeMessage = new ExecuteMessage("uiRemove", param, Channel: channel, Actor: actor, Properties: new Dictionary<string, object?> { ["step"] = goalStep });
+
+			var sink = context.GetSink(actor);
+			return await sink.SendAsync(executeMessage);
 
 		}
 
-		public record JavascriptFunction(string MethodName, Dictionary<string, object> Parameters);
-		public async Task<IError?> ExecuteJavascript(JavascriptFunction javascriptFunction)
+		public async Task<IError?> ExecuteJavascript(ExecuteMessage executeMessage)
 		{
-			var outputStream = outputStreamFactory.CreateHandler();
-			await outputStream.Write(goalStep, javascriptFunction, "javascriptFunction");
-			return null;
+			var sink = context.GetSink(executeMessage.Actor);
+			return await sink.SendAsync(executeMessage);
 		}
 
 		private LayoutOptions? GetLayoutOptions(string? name = null)
 		{
-			context.TryGetValue("Layouts", out object? obj);
+			appContext.TryGetValue("Layouts", out object? obj);
 			var layouts = obj as List<LayoutOptions>;
 			if (layouts == null)
 			{
@@ -171,8 +173,8 @@ Attribute: Member is the key in the SetAttribute js method
 		public record Event(string EventType, string CssSelectorOrVariable, GoalToCallInfo GoalToCall);
 
 
-		public record RenderTemplateOptions(string FileName, Dictionary<string, object?>? Parameters = null,
-			string? CssSelector = null, string Action = "innerHTML", bool Unique = false, string LayoutName = "default", bool RenderToOutputstream = false)
+		public record RenderTemplateOptions(RenderMessage RenderMessage, bool ReRender = true, string LayoutName = "default", 
+			bool RenderToOutputstream = false, bool DontRenderMainLayout = false)
 		{
 
 			[LlmIgnore]
@@ -180,9 +182,7 @@ Attribute: Member is the key in the SetAttribute js method
 			{
 				get
 				{
-					if (FileName.Contains("\n") || FileName.Contains("\r") || FileName.Contains("\r")) return false;
-					string ext = Path.GetExtension(FileName);
-					return (!string.IsNullOrEmpty(ext) && ext.Length < 10);
+					return PathHelper.IsTemplateFile(RenderMessage.Content);
 				}
 
 			}
@@ -198,26 +198,30 @@ Attribute: Member is the key in the SetAttribute js method
 			return path;
 		}
 
-		[Description(@"When user doesn't write the return value into any variable, set it as renderToOutputstream=true, or when user defines it. Examples:
+		[Description(@" Examples:
 ```plang
 - render product.html => renderToOutputstream = true
 - render frontpage.html, write to %html% => renderToOutputstream = false
-- render product.html to #main => renderToOutputstream = true, cssSelector=""#main""
+- render product.html to #main => renderToOutputstream = true, ReRender=true, Target=""#main""
+- replace #main with template.html => Target=#main, actions=[""replace""], ReRender=true, FileName=template.html, renderToOutputStream= true
+- set html of #product to product.html => Target=#product, actions=[""replace""], ReRender=true, FileName=product.html, renderToOutputStream= true
+- append to #list to item.html, scroll to view => Target=#list, actions=[""replace"", ""scrollIntoView""], ReRender=true, FileName=item.html, renderToOutputStream= true
 
-CssSelector can be null when not defined by user.
-Action:innerHTML|innerText|append|prepend|replace|outerHTML|outerText
-Unique: default is false. this element should only exist one time on web page, it will not overwrite existing element
+Target can be null when not defined by user.
+Actions: list of action to preform, the default is 'replace'(innerHTML).
+ReRender: default is true. normal behaviour is to re-render the content, like user browsing a website
+When user doesn't write the return value into any variable, set it as renderToOutputstream=true, or when user defines it.
 ```")]
-		public async Task<(object?, IError?)> RenderTemplate(RenderTemplateOptions options, List<Event>? events = null)
+		public async Task<(object?, IError?)> RenderTemplate(RenderTemplateOptions options)
 		{
 			string html;
 			if (options.IsTemplateFile)
 			{
-				var filePath = GetPath(options.FileName);
+				var filePath = GetPath(options.RenderMessage.Content);
 				if (!fileSystem.File.Exists(filePath))
 				{
 					string? similarFilesMessage = FileSuggestionHelper.BuildNotFoundMessage(fileSystem, filePath);
-					return (null, new ProgramError($"Template file {options.FileName} not found at {filePath}", goalStep, StatusCode: 404,
+					return (null, new ProgramError($"Template file {options.RenderMessage.Content} not found at {filePath}", goalStep, StatusCode: 404,
 						FixSuggestion: similarFilesMessage));
 				}
 
@@ -225,26 +229,27 @@ Unique: default is false. this element should only exist one time on web page, i
 			}
 			else
 			{
-				html = options.FileName;
+				html = options.RenderMessage.Content;
 			}
 			var url = (HttpContext?.Request.Path.Value ?? "/");
-			if (options.Parameters == null) options = options with { Parameters = new() };
-			if (!options.Parameters.ContainsKey("url"))
+			Dictionary<string, object?> Parameters = new();
+
+			if (!Parameters.ContainsKey("url"))
 			{
-				options.Parameters.Add("url", url);
+				Parameters.Add("url", url);
 			}
-			if (!options.Parameters.ContainsKey("id"))
+			if (!Parameters.ContainsKey("id"))
 			{
 				string path = GetCallbackPath();
-				options.Parameters.AddOrReplace("id", Path.Join(path, goalStep.Goal.GoalName, goalStep.Number.ToString()).Replace("\\", "/"));
+				Parameters.AddOrReplace("id", Path.Join(path, goalStep.Goal.GoalName, goalStep.Number.ToString()).Replace("\\", "/"));
 			}
 			
 			var templateEngine = GetProgramModule<TemplateEngineModule.Program>();
-			(var content, var error) = await templateEngine.RenderContent(html, variables: options.Parameters);
+			(var content, var error) = await templateEngine.RenderContent(html, variables: Parameters);
 			if (error != null) return (content, error);
 
-			var outputStream = outputStreamFactory.CreateHandler();
-			if (!outputStream.IsFlushed && !memoryStack.Get<bool>("request!IsAjax"))
+			var sink = context.GetSink(options.RenderMessage.Actor);
+			if (sink is HttpSink hs && !hs.IsFlushed && !memoryStack.Get<bool>("request!IsAjax") && !options.DontRenderMainLayout)
 			{
 				var layoutOptions = GetLayoutOptions();
 
@@ -261,39 +266,31 @@ Unique: default is false. this element should only exist one time on web page, i
 				}
 			}
 
-			if (options.Parameters == null)
-			{
-				options = options with { Parameters = new() };
-			}
-			options.Parameters.Add("unique", options.Unique);
+			var rm = options.RenderMessage with { Content = content };
+			options = options with {  RenderMessage = rm };	
 
-			if (!string.IsNullOrEmpty(options.CssSelector))
-			{
-				options.Parameters.Add("cssSelector", options.CssSelector);
-			}
-
-			if (!string.IsNullOrEmpty(options.Action))
-			{
-				options.Parameters.Add("action", options.Action);
-			}
-
+			Parameters.Add("reRender", options.ReRender);
+			
 			if (options.RenderToOutputstream || function.ReturnValues == null || function.ReturnValues?.Count == 0)
-			{
-				await outputStreamFactory.CreateHandler().Write(goalStep, content, "html", parameters: options.Parameters);
+			{				
+				error = await sink.SendAsync(options.RenderMessage);
+				return (null, error);
 			}
 
 			return (content, null);
 		}
 		public record Html(string Value, string? TargetElement = null);
-		public async Task<(string?, IError?)> RenderImageToHtml(string path)
+		public async Task<(object?, IError?)> RenderImageToHtml(string path)
 		{
 			var param = new Dictionary<string, object?>();
 			param.Add("path", path);
-			var result = await Executor.RunGoal("/modules/ui/RenderFile", param);
+
+			var goalToCall = new GoalToCallInfo("/modules/ui/RenderFile", param);
+
+			var result = await engine.RunGoal(goalToCall, goal, context);
 			if (result.Error != null) return (null, result.Error);
 
-			var html = result.Engine.GetMemoryStack().Get<string>("html");
-			return (html, null);
+			return (result.Variables, null);
 		}
 
 		public Task Flush()

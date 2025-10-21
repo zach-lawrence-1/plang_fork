@@ -7,6 +7,7 @@ using PLang.Interfaces;
 using PLang.Models;
 using PLang.Runtime;
 using PLang.Services.OutputStream;
+using PLang.Services.OutputStream.Messages;
 using PLang.Utils;
 using ReverseMarkdown.Converters;
 using Scriban;
@@ -33,13 +34,11 @@ namespace PLang.Modules.TemplateEngineModule
 ```")]
 	public class Program : BaseProgram
 	{
-		private readonly IOutputStreamFactory outputStreamFactory;
 
-		public Program(IPLangFileSystem fileSystem, MemoryStack memoryStack, IOutputStreamFactory outputStreamFactory)
+		public Program(IPLangFileSystem fileSystem, IMemoryStackAccessor memoryStackAccessor)
 		{
-			base.memoryStack = memoryStack;
 			base.fileSystem = fileSystem;
-			this.outputStreamFactory = outputStreamFactory;
+			base.memoryStack = memoryStackAccessor.Current;
 		}
 
 		static IReadOnlyDictionary<string, HashSet<string>> GetMembers(Template template)
@@ -86,9 +85,10 @@ namespace PLang.Modules.TemplateEngineModule
 
 			if (!writeToOutputStream) return result;
 
-			if (outputStreamFactory != null && (function?.ReturnValues == null || function?.ReturnValues.Count == 0))
+			if (writeToOutputStream || (function?.ReturnValues == null || function?.ReturnValues.Count == 0))
 			{
-				await outputStreamFactory.CreateHandler().Write(goalStep, result.Result);
+				var renderMessage = new RenderMessage(result.Result, Properties: new Dictionary<string, object?> { ["step"] = goalStep });
+				await context.UserSink.SendAsync(renderMessage);
 			}
 
 			return result;
@@ -98,6 +98,8 @@ namespace PLang.Modules.TemplateEngineModule
 		{
 
 			var templateContext = new TemplateContext();
+			templateContext.EnableNullIndexer = true;
+			templateContext.EnableRelaxedMemberAccess = true;
 			templateContext.MemberRenamer = member => member.Name;
 
 			if (variables != null)
@@ -351,6 +353,11 @@ Runtime documentation: https://github.com/scriban/scriban/blob/master/doc/runtim
 			(_, exists) = ContainsVariable("render", templateContext);
 			if (!exists)
 			{
+				globals.Import("render2", new Func<string, Dictionary<string, object>?, Task<string>>(async (path, vars) =>
+				{
+					return "hello";
+				}));
+
 				globals.Import("render", new Func<string, object[]?, Task<string>>(async (path, vars) =>
 				{
 					var modelDict = new Dictionary<string, object?>();

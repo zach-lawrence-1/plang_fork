@@ -9,12 +9,14 @@ using PLang.Interfaces;
 using PLang.Models;
 using PLang.Models.Formats;
 using PLang.Modules.WebCrawlerModule.Models;
+using PLang.Runtime;
 using PLang.Utils;
 using System.ComponentModel;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
+using static System.Net.WebRequestMethods;
 
 namespace PLang.Modules.HttpModule
 {
@@ -22,6 +24,7 @@ namespace PLang.Modules.HttpModule
 	public class Program(IPLangFileSystem fileSystem, IHttpClientFactory httpClientFactory,
 		Modules.ProgramFactory programFactory, VariableHelper variableHelper) : BaseProgram()
 	{
+		private new readonly IPLangFileSystem fileSystem = fileSystem;
 		private new readonly VariableHelper variableHelper = variableHelper;
 
 		public record HttpRequest(string Url, string Method = "GET", object? Data = null, Dictionary<string, object?>? Headers = null, string Encoding = "utf-8", string ContentType = "text/html", int TimeoutInSeconds = 30, bool SignRequest = true);
@@ -37,7 +40,7 @@ namespace PLang.Modules.HttpModule
 			{
 				return (absoluteSaveTo, null, null);
 			}
-			
+
 
 			using (var client = httpClientFactory.CreateClient())
 			{
@@ -45,7 +48,7 @@ namespace PLang.Modules.HttpModule
 				{
 					foreach (var header in headers)
 					{
-						var value = this.variableHelper.LoadVariables(header.Value);
+						var value = this.memoryStack.LoadVariables(header.Value);
 						if (value != null)
 						{
 							client.DefaultRequestHeaders.TryAddWithoutValidation(header.Key, value.ToString());
@@ -136,7 +139,7 @@ namespace PLang.Modules.HttpModule
 			Dictionary<string, object>? requestHeaders = null, Dictionary<string, object>? contentHeaders = null,
 			string encoding = "utf-8", int timeoutInSeconds = 30)
 		{
-			var requestUrl = this.variableHelper.LoadVariables(url);
+			var requestUrl = this.memoryStack.LoadVariables(url);
 			if (requestUrl == null)
 			{
 				return (null, new ProgramError("url cannot be empty", goalStep, function), null);
@@ -144,7 +147,7 @@ namespace PLang.Modules.HttpModule
 
 
 			using (var httpClient = httpClientFactory.CreateClient())
-			using (var fileStream = File.OpenRead(filePath))
+			using (var fileStream = fileSystem.File.OpenRead(filePath))
 			{
 				using (var request = new HttpRequestMessage(new HttpMethod(httpMethod), requestUrl.ToString()))
 				{
@@ -154,7 +157,7 @@ namespace PLang.Modules.HttpModule
 					{
 						foreach (var header in requestHeaders)
 						{
-							var value = this.variableHelper.LoadVariables(header.Value).ToString();
+							var value = this.memoryStack.LoadVariables(header.Value).ToString();
 							request.Headers.TryAddWithoutValidation(header.Key, value);
 						}
 					}
@@ -166,7 +169,7 @@ namespace PLang.Modules.HttpModule
 					{
 						foreach (var header in contentHeaders)
 						{
-							var value = this.variableHelper.LoadVariables(header.Value).ToString();
+							var value = this.memoryStack.LoadVariables(header.Value).ToString();
 							content.Headers.TryAddWithoutValidation(header.Key, value);
 						}
 					}
@@ -209,7 +212,7 @@ namespace PLang.Modules.HttpModule
 			{
 				httpClient.Timeout = new TimeSpan(0, 0, timeoutInSeconds);
 
-				var requestUrl = this.variableHelper.LoadVariables(url);
+				var requestUrl = this.memoryStack.LoadVariables(url);
 				if (requestUrl == null)
 				{
 					return (null, new ProgramError("url cannot be empty", goalStep, function), null);
@@ -230,7 +233,7 @@ namespace PLang.Modules.HttpModule
 							{
 								string fileName = property.Value.ToString().Substring(1);
 								string typeValue = null;
-								fileName = this.variableHelper.LoadVariables(fileName).ToString();
+								fileName = this.memoryStack.LoadVariables(fileName).ToString();
 
 								if (fileName != null && fileName.Contains(";"))
 								{
@@ -280,7 +283,7 @@ namespace PLang.Modules.HttpModule
 						{
 							foreach (var header in headers)
 							{
-								var value = this.variableHelper.LoadVariables(header.Value).ToString();
+								var value = this.memoryStack.LoadVariables(header.Value).ToString();
 								request.Headers.TryAddWithoutValidation(header.Key, value);
 							}
 						}
@@ -374,8 +377,8 @@ namespace PLang.Modules.HttpModule
 		public virtual async Task<(object? Data, IError? Error, Properties Properties)> Request(string url, string method, object? data = null, bool doNotSignRequest = false,
 			Dictionary<string, object>? headers = null, string encoding = "utf-8", string contentType = "application/json", int timeoutInSeconds = 30)
 		{
-			
-			var requestUrl = this.variableHelper.LoadVariables(url);
+
+			var requestUrl = this.memoryStack.LoadVariables(url);
 			if (requestUrl == null)
 			{
 				return (null, new ProgramError("url cannot be empty", goalStep, function), null);
@@ -393,24 +396,35 @@ namespace PLang.Modules.HttpModule
 			{
 				foreach (var header in headers)
 				{
-					var value = this.variableHelper.LoadVariables(header.Value);
+					var value = this.memoryStack.LoadVariables(header.Value);
 					if (value != null)
 					{
 						request.Headers.TryAddWithoutValidation(header.Key, value.ToString());
 					}
 				}
 			}
-			if (context.ContainsKey("!callback"))
+
+			if (appContext != null)
 			{
-				request.Headers.TryAddWithoutValidation("!callback", JsonConvert.SerializeObject(context["!callback"]));
-			}
-			if (context.ContainsKey("!contract"))
-			{
-				request.Headers.TryAddWithoutValidation("!contract", JsonConvert.SerializeObject(context["!contract"]));
+				if (appContext.ContainsKey("!callback"))
+				{
+					request.Headers.TryAddWithoutValidation("!callback", JsonConvert.SerializeObject(appContext["!callback"]));
+				}
+				if (appContext.ContainsKey("!contract"))
+				{
+					request.Headers.TryAddWithoutValidation("!contract", JsonConvert.SerializeObject(appContext["!contract"]));
+				}
 			}
 			if (request.Headers.Accept.Count == 0)
 			{
-				request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+				if (string.IsNullOrEmpty(contentType))
+				{
+					request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+				}
+				else
+				{
+					request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(contentType));
+				}
 			}
 			Dictionary<string, object?> requestValue = new();
 			request.Headers.UserAgent.ParseAdd("plang v0.1");
@@ -430,7 +444,8 @@ namespace PLang.Modules.HttpModule
 			}
 
 			httpClient.Timeout = new TimeSpan(0, 0, timeoutInSeconds);
-			
+
+
 			requestValue.Add("Headers", request.Headers);
 			requestValue.Add("Url", url);
 			Properties properties = new();
@@ -446,20 +461,36 @@ namespace PLang.Modules.HttpModule
 				var mediaType = response.Content.Headers.ContentType?.MediaType;
 				if (!response.IsSuccessStatusCode)
 				{
-					
+
 					var result = await programFactory.GetProgram<SerializerModule.Program>(goalStep).Deserialize(response.Content.ReadAsStream(), mediaType);
 					if (result.Error != null && result.Error.Key != "SerializerNotDefined") return (null, result.Error, GetHttpResponse(properties, response));
 
 
 					string responseStr = await response.Content.ReadAsStringAsync();
-					
+
 					var obj = result.Object as Dictionary<string, object?>;
 					if (obj == null)
-					{						
+					{
 						if (string.IsNullOrEmpty(responseStr))
 						{
 							responseStr = $"{response.ReasonPhrase} ({(int)response.StatusCode})";
 						}
+
+						if (IsXml(response.Content.Headers.ContentType?.MediaType))
+						{
+							// todo: here we convert any xml to json so user can use JSONPath to get the content. 
+							// better/faster would be to return the xml object, then when user wants to use json path, it uses xpath.
+							XmlDocument xmlDoc = new XmlDocument();
+							xmlDoc.LoadXml(Regex.Replace(responseStr, "<\\?xml.*?\\?>", "", RegexOptions.IgnoreCase));
+
+							string jsonString = JsonConvert.SerializeXmlNode(xmlDoc, Newtonsoft.Json.Formatting.Indented, true);
+							properties = GetHttpResponse(properties, response);
+							return (JsonConvert.DeserializeObject(jsonString), null, properties);
+
+						}
+
+
+
 						properties = GetHttpResponse(properties, response);
 						return (result.Object, new ProgramError(responseStr, goalStep, function, StatusCode: (int)response.StatusCode), properties);
 					}
@@ -470,10 +501,10 @@ namespace PLang.Modules.HttpModule
 						var signature = await programFactory.GetProgram<IdentityModule.Program>(goalStep).VerifySignature(signatureJson.Value.ToString());
 						if (signature.Error != null) return (obj.ToString(), signature.Error, GetHttpResponse(properties, response));
 
-						if (signature.Signature != null)
+						if (appContext != null && signature.Signature != null)
 						{
-							context.AddOrReplace(ReservedKeywords.Signature, signature.Signature);
-							context.AddOrReplace(ReservedKeywords.ServiceIdentity, signature.Signature.Identity);
+							appContext.AddOrReplace(ReservedKeywords.Signature, signature.Signature);
+							appContext.AddOrReplace(ReservedKeywords.ServiceIdentity, signature.Signature.Identity);
 						}
 					}
 					var responseJson = obj.FirstOrDefault(p => p.Key.Equals("response", StringComparison.OrdinalIgnoreCase));
@@ -493,18 +524,28 @@ namespace PLang.Modules.HttpModule
 					properties = GetHttpResponse(properties, response);
 					return (null, new ProgramError(responseStr, goalStep, function, Key: response.ReasonPhrase ?? "HttpError", StatusCode: (int)response.StatusCode), properties);
 				}
+				var bytes = await response.Content.ReadAsByteArrayAsync();
 
 				if (!IsTextResponse(mediaType))
-				{
-					var bytes = await response.Content.ReadAsByteArrayAsync();
+				{					
 					properties = GetHttpResponse(properties, response);
 					return (bytes, null, properties);
 				}
 
-				string responseBody = await response.Content.ReadAsStringAsync();
+				var charset = UtfUnknown.CharsetDetector.DetectFromBytes(bytes);
+				var enc = charset.Detected?.Encoding ?? Encoding.UTF8;
+
+				// Ensure non-UTF encodings are available
+				Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
+				string responseBody = enc.GetString(bytes);
+				
+
+				//string responseBody = await response.Content.ReadAsStringAsync();
 				if (response.Content.Headers.ContentType?.MediaType == "application/json" && JsonHelper.IsJson(responseBody))
 				{
 					properties = GetHttpResponse(properties, response);
+					properties.Add(new ObjectValue("Encoding", enc));
 					try
 					{
 						return (JsonConvert.DeserializeObject(responseBody), null, properties);
@@ -520,14 +561,14 @@ namespace PLang.Modules.HttpModule
 					// better/faster would be to return the xml object, then when user wants to use json path, it uses xpath.
 					XmlDocument xmlDoc = new XmlDocument();
 					xmlDoc.LoadXml(Regex.Replace(responseBody, "<\\?xml.*?\\?>", "", RegexOptions.IgnoreCase));
-
+					properties.Add(new ObjectValue("Encoding", enc));
 					string jsonString = JsonConvert.SerializeXmlNode(xmlDoc, Newtonsoft.Json.Formatting.Indented, true);
 					properties = GetHttpResponse(properties, response);
 					return (JsonConvert.DeserializeObject(jsonString), null, properties);
 
 				}
 				properties = GetHttpResponse(properties, response);
-
+				properties.Add(new ObjectValue("Encoding", enc));
 				return (responseBody, null, properties);
 
 			}
@@ -605,11 +646,11 @@ namespace PLang.Modules.HttpModule
 		{
 			if (mediaType == null) return false;
 
-			if (mediaType.Contains("text/")) return true;
+			if (mediaType.Contains("text/") || mediaType.Contains("/text")) return true;
 
 			if (mediaType.Contains("application/"))
 			{
-				string[] possibleTextTypes = { "json", "xml", "html", "javascript", "x-yaml", "rtf", "toml", "x-latex", "sgml", "ecmascript", "x-sh", "x-perl", "x-python", "x-ruby" };
+				string[] possibleTextTypes = { "json", "xml", "text", "html", "javascript", "x-yaml", "rtf", "toml", "x-latex", "sgml", "ecmascript", "x-sh", "x-perl", "x-python", "x-ruby" };
 				foreach (var item in possibleTextTypes)
 				{
 					if (mediaType.Contains(item)) return true;

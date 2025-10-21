@@ -14,6 +14,8 @@ using PLang.Models;
 using PLang.SafeFileSystem;
 using PLang.Services.OutputStream;
 using PLang.Utils;
+using System;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using static PLang.Modules.BaseBuilder;
@@ -22,7 +24,7 @@ namespace PLang.Runtime
 {
 	public interface IPseudoRuntime
 	{
-		Task<(IEngine engine, object? Variables, IError? error)> RunGoal(IEngine engine, PLangAppContext context, string appPath, GoalToCallInfo goalToCall,
+		Task<(IEngine Engine, object? Variables, IError? Error)> RunGoal(IEngine engine, IPLangContextAccessor contextAccessor, string appPath, GoalToCallInfo goalToCall,
 			Goal? callingGoal = null, bool waitForExecution = true,
 			long delayWhenNotWaitingInMilliseconds = 50, uint waitForXMillisecondsBeforeRunningGoal = 0, int indent = 0,
 			bool keepMemoryStackOnAsync = false, bool isolated = false, bool disableOsGoals = false, bool isEvent = false);
@@ -39,14 +41,19 @@ namespace PLang.Runtime
 			this.prParser = prParser;
 		}
 
-		public async Task<(IEngine engine, object? Variables, IError? error)>
-			RunGoal(IEngine engine, PLangAppContext context, string relativeAppPath, GoalToCallInfo goalToCall, Goal? callingGoal = null,
+		public async Task<(IEngine Engine, object? Variables, IError? Error)>
+			RunGoal(IEngine engine, IPLangContextAccessor contextAccessor, string relativeAppPath, GoalToCallInfo goalToCall, Goal? callingGoal = null,
 						bool waitForExecution = true, long delayWhenNotWaitingInMilliseconds = 50,
 						uint waitForXMillisecondsBeforeRunningGoal = 0, int indent = 0,
 						bool keepMemoryStackOnAsync = false, bool isolated = false, bool disableOsGoals = false, bool isEvent = false)
 		{
 
-			if (callingGoal == null) return (engine, null, new Error($"Calling goal is null. {ErrorReporting.CreateIssueShouldNotHappen}"));
+			
+			if (callingGoal == null)
+			{
+				callingGoal = prParser.GetAllGoals().FirstOrDefault(p => p.GoalName == "Start");
+				if (callingGoal == null) return (engine, null, new Error($"Calling goal is null. {ErrorReporting.CreateIssueShouldNotHappen}"));
+			}
 
 			var goalName = goalToCall.Name;
 			var parameters = goalToCall.Parameters;
@@ -58,7 +65,6 @@ namespace PLang.Runtime
 			var g = prParser.ParsePrFile(goalToCall.Path);
 			var systemGoals = (disableOsGoals) ? new() : prParser.GetSystemGoals();
 
-			var callingStep = (callingGoal.CurrentStepIndex != -1) ? callingGoal.GoalSteps[callingGoal.CurrentStepIndex] : null;
 			var relativeGoalPath = callingGoal.RelativeGoalPath;
 			var appStartFolderPath = callingGoal.AbsoluteAppStartupFolderPath;
 			
@@ -78,8 +84,14 @@ namespace PLang.Runtime
 			if (goalToRun == null) return (engine, null, new Error($"{goalToCall.Name} could not be found"));
 
 			var runtimeEngine = engine;
+			var context = contextAccessor.Current;
+
+			
+
 			try
 			{
+				context.CallStack.EnterGoal(goalToRun);
+
 				// todo: (Decision) The idea behind isolation is when you call a external app, that app should not have access
 				// to the memory of the calling app, and only get the parameters that are sent
 				// this is not working now, when I rent engine it gets the memory.
@@ -89,7 +101,7 @@ namespace PLang.Runtime
 				{
 					isRented = true;
 
-					runtimeEngine = await engine.RentAsync(callingStep, engine.OutputStream);
+					runtimeEngine = await engine.RentAsync(context.CallingStep);
 				}
 
 
@@ -101,19 +113,21 @@ namespace PLang.Runtime
 					goalToRun.ParentGoal = callingGoal;
 				}
 
-				var memoryStack = runtimeEngine.GetMemoryStack();
+				var memoryStack = context.MemoryStack;
 
 				if (parameters != null)
 				{
 					foreach (var param in parameters ?? [])
 					{
+						object? value = (param.Value is ObjectValue ov) ? ov.Value : param.Value;
 						if (param.Key.StartsWith("!"))
 						{
-							goalToRun.AddVariable(param.Value, variableName: param.Key);
+							goalToRun.AddVariable(value, variableName: param.Key);
 						}
 						else
 						{
-							memoryStack.Put(param.Key, param.Value, goalStep: callingStep, disableEvent: true);
+													
+							memoryStack.Put(param.Key, value, goalStep: context.CallingStep, disableEvent: true);
 						}
 					}
 				}
@@ -123,7 +137,7 @@ namespace PLang.Runtime
 				Task<(object? Variables, IError? Error)> task;
 				if (waitForExecution)
 				{
-					task = runtimeEngine.RunGoal(goalToRun, waitForXMillisecondsBeforeRunningGoal);
+					task = runtimeEngine.RunGoal(goalToRun, context, waitForXMillisecondsBeforeRunningGoal);
 					try
 					{
 						await task;
@@ -132,7 +146,7 @@ namespace PLang.Runtime
 
 					if (task.IsFaulted && task.Exception != null)
 					{
-						error = new ExceptionError(task.Exception, task.Exception.Message, callingGoal, callingStep);
+						error = new ExceptionError(task.Exception, task.Exception.Message, callingGoal, context.CallingStep);
 					}
 					else
 					{
@@ -147,11 +161,18 @@ namespace PLang.Runtime
 					{
 						try
 						{
-							var result = await runtimeEngine.RunGoal(goalToRun, waitForXMillisecondsBeforeRunningGoal);
+
+							var newContext = context.Clone(runtimeEngine);
+							newContext.IsAsync = true;
+							newContext.HttpContext = null;
+							contextAccessor.Current = newContext;
+
+							var result = await runtimeEngine.RunGoal(goalToRun, newContext, waitForXMillisecondsBeforeRunningGoal);
+							if (result.Error != null)
+							{
+								Console.WriteLine("Error running async goal:" + result.Error.ToString());
+							}
 							return result;
-						} catch
-						{
-							throw;
 						} finally
 						{
 							if (isRented)
@@ -195,18 +216,19 @@ namespace PLang.Runtime
 			{
 				if (goalToRun != null)
 				{
-					await goalToRun.DisposeVariables(runtimeEngine.GetMemoryStack());
+					await goalToRun.DisposeVariables(context.MemoryStack);
 				}
 				if (isRented && waitForExecution)
 				{
 					engine.Return(runtimeEngine);
 				}
+				context.CallStack.ExitGoal();
 			}
 		}
 
 		private static void KeepAlive(IEngine engine, Task<(object? Variables, IError? Error)> task)
 		{
-			var alives = AppContext.GetData("KeepAlive") as List<Alive>;
+			var alives = engine.GetAppContext().GetOrDefault<List<Alive>>("KeepAlive");
 			if (alives == null) alives = new List<Alive>();
 
 			var aliveType = alives.FirstOrDefault(p => p.Type == task.GetType() && p.Key == "WaitForExecution");
@@ -215,7 +237,7 @@ namespace PLang.Runtime
 				aliveType = new Alive(task.GetType(), "WaitForExecution", [new EngineWait(task, engine)]);
 				alives.Add(aliveType);
 
-				AppContext.SetData("KeepAlive", alives);
+				engine.GetAppContext().AddOrReplace("KeepAlive", alives);
 			}
 			else
 			{

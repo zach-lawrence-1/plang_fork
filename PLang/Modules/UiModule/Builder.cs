@@ -84,24 +84,32 @@ Response with only the function name you would choose");
 			if (result.BuilderError != null) return (null, result.BuilderError);
 
 			var function = result.Instruction.Function;
-			if (function.Name == "RenderHtml")
-			{
-				return await BuildRenderHtml(step);
-			}
+			
 			return result;
 		}
 
 		public async Task<(Instruction?, IBuilderError?)> BuilderRenderTemplate(GoalStep step, Instruction instruction, GenericFunction gf)
 		{
+			
+			var renderOption = gf.GetParameter<RenderTemplateOptions>("options");
+			if (renderOption.RenderMessage == null)
+			{
+				return (instruction, new StepBuilderError("RenderMessage needs to be defined", step));
+			}
+			if (string.IsNullOrEmpty(renderOption.RenderMessage.Content))
+			{
+				return (instruction, new StepBuilderError("FileName or html needs to be defined", step));
+			}
+			
 			var events = gf.GetParameter<List<Event>?>("events");
 			if (events == null || events.Count == 0) return (instruction, null);
 
-
-			var renderOption = gf.GetParameter<RenderTemplateOptions>("options");
+			/*
 			
-			if (renderOption.FileName.Contains("%"))
+
+			if (renderOption?.FileNameOrHtml.Contains("%") == true)
 			{
-				return (instruction, new StepBuilderError($"Events cannot be added to dynamic file path {renderOption.FileName}", step));
+				return (instruction, new StepBuilderError($"Events cannot be added to dynamic file path {renderOption.FileNameOrHtml}", step));
 			}
 
 			List<LlmMessage> messages = new();
@@ -131,7 +139,7 @@ Examples:
 
 "));
 
-			var templatePath = PathHelper.GetPath(renderOption.FileName, fileSystem, step.Goal);
+			var templatePath = PathHelper.GetPath(renderOption.FileNameOrHtml, fileSystem, step.Goal);
 			var html = fileSystem.File.ReadAllText(templatePath);
 			messages.Add(new LlmMessage("user", html));
 
@@ -371,7 +379,7 @@ stick to user intent and DO NOT assume elements not described, for example DO NO
 
 			var framework = gf.GetParameter<UiFramework>("framework");
 			var dict = new Dictionary<string, object?>();
-			dict.Add("framework", variableHelper.LoadVariables(framework));
+			dict.Add("framework", memoryStack.LoadVariables(framework));
 
 			var goalToCall = new GoalToCallInfo("/modules/UiModule/Builder/SetFrameworks", dict);
 
@@ -394,7 +402,7 @@ stick to user intent and DO NOT assume elements not described, for example DO NO
 
 			var options = gf.GetParameter<LayoutOptions>("options");
 			var dict = new Dictionary<string, object?>();
-			dict.Add("options", variableHelper.LoadVariables(options));
+			dict.Add("options", memoryStack.LoadVariables(options));
 
 			var goalToCall = new GoalToCallInfo("/modules/UiModule/Builder/SetLayout", dict);
 
