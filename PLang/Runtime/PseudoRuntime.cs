@@ -53,6 +53,9 @@ namespace PLang.Runtime
 			var isRented = false;
 
 			var goals = prParser.GetGoals();
+
+			//TESTING
+			var g = prParser.ParsePrFile(goalToCall.Path);
 			var systemGoals = (disableOsGoals) ? new() : prParser.GetSystemGoals();
 
 			var callingStep = (callingGoal.CurrentStepIndex != -1) ? callingGoal.GoalSteps[callingGoal.CurrentStepIndex] : null;
@@ -68,6 +71,7 @@ namespace PLang.Runtime
 					relativeGoalPath = eventBinding.Goal!.RelativeGoalPath;
 				}
 			}
+			//TODO: figure out what getgoal does with goals var and change relative goal path to the path of the goal external goal file
 			(var goalToRun, var error) = GoalHelper.GetGoal(relativeGoalPath, fileSystem.RootDirectory, goalToCall, goals, systemGoals);
 			
 			if (error != null) return (engine, null, error);

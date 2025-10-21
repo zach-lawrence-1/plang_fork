@@ -103,18 +103,22 @@ namespace PLang.Modules.CallGoalModule
 		}
 
 		[Description("Call/Runs a goal defined outside of the current path. Something like call external goal GOALNAME from GOALPATH")]
-		public async Task<(object? Return, IError? Error)> RunExternalGoal(string goalPath, GoalToCallInfo goalInfo = null, bool waitForExecution = true,
+		public async Task<(object? Return, IError? Error)> RunExternalGoal(string goalPath, GoalToCallInfo goalInfo, bool waitForExecution = true,
 			int delayWhenNotWaitingInMilliseconds = 50, uint waitForXMillisecondsBeforeRunningGoal = 0, bool keepMemoryStackOnAsync = false,
 			bool isolated = false, bool disableSystemGoals = false, bool isEvent = false)
 		{
-			Console.WriteLine("test", goalPath);
-			return (null, null);
+			//NOTE: goalInfo path member should contain the location to the relevant pr file
+			goalInfo.Path = goalPath;
+			//PrParser pr = new PrParser;
+			//Goal? g = pr.ParsePrFile(goalPath);
+
 			try
 			{
 				string path = (goal != null) ? goal.RelativeAppStartupFolderPath : "/";
 				int indent = (goalStep == null) ? 0 : goalStep.Indent;
 				var context = engine.GetContext();
 
+				//TODO: fix error that happens inside ofpseudoRuntime.RunGoal
 				var result = await pseudoRuntime.RunGoal(engine, context, path, goalInfo, goal,
 						waitForExecution, delayWhenNotWaitingInMilliseconds, waitForXMillisecondsBeforeRunningGoal, indent, keepMemoryStackOnAsync, isolated, disableSystemGoals, isEvent);
 
@@ -137,28 +141,12 @@ namespace PLang.Modules.CallGoalModule
 				throw;
 			}
 		}
-
-		/*
-		private void ValidateAppInstall(string goalToRun)
+	
+		
+		public async Task GetExternalGoal(string goalPath, GoalToCallInfo goalInfo)
 		{
-			if (string.IsNullOrEmpty(goalToRun)) return;
-			if (!goalToRun.Contains("apps")) return;
-
-			goalToRun = goalToRun.AdjustPathToOs().Replace("!", "");
-
-			string appName = GoalHelper.GetAppName(goalToRun);
-			string goalName = GoalHelper.GetGoalPath(goalToRun);
-
-			string buildPath = fileSystem.Path.Join(fileSystem.Path.DirectorySeparatorChar.ToString(), "apps", appName, ".build", goalName);
-			var goal = prParser.GetAllGoals().FirstOrDefault(p => p.RelativePrFolderPath.ToLower() == buildPath.ToLower());
-			if (goal != null) return;
-
-			appsRepository.InstallApp(appName);
-
-
-		}*/
-
-
+			//TODO: parse external pr file and add it to a goal variable so it can be found in the engine runtime
+		}
 	}
 
 
