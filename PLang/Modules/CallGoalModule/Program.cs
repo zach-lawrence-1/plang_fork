@@ -104,6 +104,7 @@ namespace PLang.Modules.CallGoalModule
 
 		}
 
+		/*
 		[Description("Call/Runs a goal defined outside of the current path. Something like call external goal GOALNAME from GOALPATH")]
 		public async Task<(object? Return, IError? Error)> RunExternalGoal(string goalPath, GoalToCallInfo goalInfo, bool waitForExecution = true,
 			int delayWhenNotWaitingInMilliseconds = 50, uint waitForXMillisecondsBeforeRunningGoal = 0, bool keepMemoryStackOnAsync = false,
@@ -133,7 +134,7 @@ namespace PLang.Modules.CallGoalModule
 				if (result.error is EndGoal endGoal && (goal == null || GoalHelper.IsPartOfCallStack(goal, endGoal)) && endGoal.Levels == 0)
 				{
 					return (result.Variables, null);
-				}*/
+				}
 
 				return (result.Variables, result.error);
 			}
@@ -149,6 +150,7 @@ namespace PLang.Modules.CallGoalModule
 		{
 			//TODO: parse external pr file and add it to a goal variable so it can be found in the engine runtime
 		}
+		*/
 	}
 
 

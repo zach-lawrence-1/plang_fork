@@ -1,4 +1,4 @@
-﻿using LightInject;
+﻿﻿using LightInject;
 using PLang.Building.Model;
 using PLang.Building.Parsers;
 using PLang.Container;
@@ -60,10 +60,7 @@ namespace PLang.Runtime
 			var isRented = false;
 
 			var goals = prParser.GetGoals();
-
-			//TESTING
-			var g = prParser.ParsePrFile(goalToCall.Path);
-			var systemGoals = (disableOsGoals) ? new() : prParser.GetSystemGoals();
+			var systemGoals = (disableOsGoals) ? new List<Goal>() : prParser.GetSystemGoals();
 
 			var relativeGoalPath = callingGoal.RelativeGoalPath;
 			var appStartFolderPath = callingGoal.AbsoluteAppStartupFolderPath;
@@ -77,7 +74,6 @@ namespace PLang.Runtime
 					relativeGoalPath = eventBinding.Goal!.RelativeGoalPath;
 				}
 			}
-			//TODO: figure out what getgoal does with goals var and change relative goal path to the path of the goal external goal file
 			(var goalToRun, var error) = GoalHelper.GetGoal(relativeGoalPath, fileSystem.RootDirectory, goalToCall, goals, systemGoals);
 			
 			if (error != null) return (engine, null, error);

@@ -18,7 +18,7 @@ namespace PLang.Modules.ConditionalModule
 		public enum ConditionKind { Simple, Compound }
 		[Description(@"
 For CompundCondition, use Conditions list to construct the condition. LeftValue and RightValue are used only at in SimpleCondition
-Operator: ==|!=|<|>|<=|>=|in|isEmpty|contains|startswith|endswith|indexOf
+Operator: ==|!=|<|>|<=|>=|in|isEmpty|contains|does not contain|startswith|endswith|indexOf
 
 ")]
 		public record CompoundCondition : Condition;
